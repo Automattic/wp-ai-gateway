@@ -31,6 +31,36 @@ Configured provider and model
 - Resolves provider API keys from Connectors-style options, constants, environment variables, or the `wp_ai_gateway_provider_api_key` filter.
 - Preserves provider-supplied authentication when a provider owns its own request-auth flow.
 
+## Architecture
+
+The plugin is intentionally generic. It does not know which OpenAI-compatible client is calling it, and it does not special-case any provider plugin.
+
+```text
+plugin.php
+  |
+  v
+Plugin bootstrap
+  |-- RestController       OpenAI-compatible REST routes
+  |-- TokenAuthenticator   Gateway token minting and validation
+  |-- ProviderRouter       site-default and provider:model-id routing
+  |-- AiClientBridge       WordPress AI Client registry/model dispatch
+  |-- OpenAiResponse       OpenAI-compatible payload/error helpers
+  |-- SettingsPage         wp-admin provider/model settings
+  `-- CliCommand           wp ai-gateway configure/token/status
+```
+
+Core files:
+
+- `plugin.php` loads the plugin and registers hooks.
+- `inc/constants.php` defines option names, REST namespace, and `site-default`.
+- `inc/class-rest-controller.php` owns `/models` and `/chat/completions`.
+- `inc/class-token-authenticator.php` owns external client bearer-token behavior.
+- `inc/class-provider-router.php` resolves `site-default` and `provider:model-id` model names.
+- `inc/class-ai-client-bridge.php` adapts normalized requests to WordPress AI Client.
+- `inc/class-openai-response.php` keeps response and error shapes OpenAI-compatible.
+- `inc/class-settings-page.php` owns the minimal wp-admin settings page.
+- `inc/class-cli-command.php` owns automation-friendly WP-CLI setup/status commands.
+
 ## Endpoints
 
 ```text

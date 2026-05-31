@@ -214,17 +214,17 @@ namespace {
     $registry = new WpAiGatewaySmoke\FakeRegistry();
     WordPress\AiClient\AiClient::$registry = $registry;
 
-    $missing = Chubes4\WpAiGateway\handle_models(new WP_REST_Request());
+    $missing = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request());
     assert_true($missing instanceof WP_REST_Response, 'Missing token should return REST response.');
     assert_true(401 === $missing->get_status(), 'Missing token should return 401.');
     assert_true(isset($missing->get_data()['error']['type']), 'Missing token should be OpenAI-shaped.');
 
     update_option(Chubes4\WpAiGateway\OPTION_TOKEN_HASH, hash('sha256', 'valid-token'), false);
-    $invalid = Chubes4\WpAiGateway\handle_models(new WP_REST_Request(['Authorization' => 'Bearer invalid-token']));
+    $invalid = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer invalid-token']));
     assert_true($invalid instanceof WP_REST_Response, 'Invalid token should return REST response.');
     assert_true(403 === $invalid->get_status(), 'Invalid token should return 403.');
 
-    $unconfigured = Chubes4\WpAiGateway\handle_chat_completions(new WP_REST_Request(
+    $unconfigured = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
         ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]]
     ));
@@ -234,24 +234,24 @@ namespace {
 
     update_option(Chubes4\WpAiGateway\OPTION_PROVIDER, 'example-provider', false);
     update_option(Chubes4\WpAiGateway\OPTION_MODEL, 'example-model', false);
-    $models = Chubes4\WpAiGateway\handle_models(new WP_REST_Request(['Authorization' => 'Bearer valid-token']));
+    $models = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer valid-token']));
     assert_true(200 === $models->get_status(), 'Configured /models should return 200.');
     assert_true('site-default' === $models->get_data()['data'][0]['id'], '/models should include site-default.');
 
-    $chat = Chubes4\WpAiGateway\handle_chat_completions(new WP_REST_Request(
+    $chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
         ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]]
     ));
     assert_true(200 === $chat->get_status(), 'site-default path without API key should return 200 with fake provider.');
     assert_true(false === $registry->apiKeyAuthenticationBound, 'Provider-supplied auth path should not inject API-key auth.');
 
-    $provider_qualified_chat = Chubes4\WpAiGateway\handle_chat_completions(new WP_REST_Request(
+    $provider_qualified_chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
         ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
     ));
     assert_true(200 === $provider_qualified_chat->get_status(), 'Provider-qualified model path should return 200 with fake provider.');
 
-    $status = Chubes4\WpAiGateway\gateway_status();
+    $status = Chubes4\WpAiGateway\CliCommand::gateway_status();
     assert_true(true === $status['configured'], 'Status should report configured route.');
     assert_true(true === $status['token_hash_exists'], 'Status should report token hash exists.');
     assert_true(!array_key_exists('token', $status), 'Status must not expose token values.');
