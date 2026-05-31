@@ -201,7 +201,7 @@ namespace WpAiGatewaySmoke {
     {
         public bool $apiKeyAuthenticationBound = false;
 
-        public function getRegisteredProviderIds(): array { return ['codex']; }
+        public function getRegisteredProviderIds(): array { return ['example-provider']; }
         public function getProviderClassName(string $provider): string { unset($provider); return FakeProvider::class; }
         public function getProviderModel(string $provider, string $model, $config = null): FakeModel { unset($provider, $model, $config); return new FakeModel(); }
         public function setProviderRequestAuthentication(string $provider, $authentication): void { unset($provider, $authentication); $this->apiKeyAuthenticationBound = true; }
@@ -232,8 +232,8 @@ namespace {
     assert_true(500 === $unconfigured->get_status(), 'Unconfigured route should return 500.');
     assert_true(isset($unconfigured->get_data()['error']['message']), 'Unconfigured route should be OpenAI-shaped.');
 
-    update_option(Chubes4\WpAiGateway\OPTION_PROVIDER, 'codex', false);
-    update_option(Chubes4\WpAiGateway\OPTION_MODEL, 'gpt-5.5', false);
+    update_option(Chubes4\WpAiGateway\OPTION_PROVIDER, 'example-provider', false);
+    update_option(Chubes4\WpAiGateway\OPTION_MODEL, 'example-model', false);
     $models = Chubes4\WpAiGateway\handle_models(new WP_REST_Request(['Authorization' => 'Bearer valid-token']));
     assert_true(200 === $models->get_status(), 'Configured /models should return 200.');
     assert_true('site-default' === $models->get_data()['data'][0]['id'], '/models should include site-default.');
@@ -242,8 +242,14 @@ namespace {
         ['Authorization' => 'Bearer valid-token'],
         ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]]
     ));
-    assert_true(200 === $chat->get_status(), 'Codex path without API key should return 200 with fake provider.');
-    assert_true(false === $registry->apiKeyAuthenticationBound, 'Codex path without API key should not inject API-key auth.');
+    assert_true(200 === $chat->get_status(), 'site-default path without API key should return 200 with fake provider.');
+    assert_true(false === $registry->apiKeyAuthenticationBound, 'Provider-supplied auth path should not inject API-key auth.');
+
+    $provider_qualified_chat = Chubes4\WpAiGateway\handle_chat_completions(new WP_REST_Request(
+        ['Authorization' => 'Bearer valid-token'],
+        ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
+    ));
+    assert_true(200 === $provider_qualified_chat->get_status(), 'Provider-qualified model path should return 200 with fake provider.');
 
     $status = Chubes4\WpAiGateway\gateway_status();
     assert_true(true === $status['configured'], 'Status should report configured route.');

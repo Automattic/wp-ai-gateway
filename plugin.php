@@ -255,11 +255,11 @@ function render_settings_page(): void
             <table class="form-table" role="presentation">
                 <tr>
                     <th scope="row"><label for="<?php echo esc_attr(OPTION_PROVIDER); ?>">Provider</label></th>
-                    <td><input name="<?php echo esc_attr(OPTION_PROVIDER); ?>" id="<?php echo esc_attr(OPTION_PROVIDER); ?>" type="text" class="regular-text" value="<?php echo esc_attr(configured_provider()); ?>" placeholder="opencode" /></td>
+                    <td><input name="<?php echo esc_attr(OPTION_PROVIDER); ?>" id="<?php echo esc_attr(OPTION_PROVIDER); ?>" type="text" class="regular-text" value="<?php echo esc_attr(configured_provider()); ?>" placeholder="example-provider" /></td>
                 </tr>
                 <tr>
                     <th scope="row"><label for="<?php echo esc_attr(OPTION_MODEL); ?>">Model</label></th>
-                    <td><input name="<?php echo esc_attr(OPTION_MODEL); ?>" id="<?php echo esc_attr(OPTION_MODEL); ?>" type="text" class="regular-text" value="<?php echo esc_attr(configured_model()); ?>" placeholder="opencode-go/kimi-k2.6" /></td>
+                    <td><input name="<?php echo esc_attr(OPTION_MODEL); ?>" id="<?php echo esc_attr(OPTION_MODEL); ?>" type="text" class="regular-text" value="<?php echo esc_attr(configured_model()); ?>" placeholder="example-model" /></td>
                 </tr>
             </table>
             <?php submit_button(); ?>
@@ -741,14 +741,14 @@ class CliCommand
      * ## OPTIONS
      *
      * <provider>
-     * : Provider ID, for example opencode.
+     * : Provider ID, for example example-provider.
      *
      * <model>
-     * : Provider model ID, for example opencode-go/kimi-k2.6.
+     * : Provider model ID, for example example-model.
      *
      * ## EXAMPLES
      *
-     *     wp ai-gateway configure opencode opencode-go/kimi-k2.6
+     *     wp ai-gateway configure example-provider example-model
      *
      * @param list<string> $args Command arguments.
      * @return void

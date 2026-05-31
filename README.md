@@ -5,7 +5,7 @@ OpenAI-compatible AI gateway for WordPress, backed by the WordPress AI Client.
 WP AI Gateway lets external clients use a WordPress site as an AI provider endpoint. The site owns authentication, model routing, and provider credentials; clients only receive a scoped gateway token.
 
 ```text
-OpenCode / external clients
+Any OpenAI-compatible client
         |
         v
 WP AI Gateway
@@ -29,7 +29,7 @@ Configured provider and model
 - Authenticates external clients with a site-issued bearer token.
 - Routes `site-default` to the provider/model configured on the WordPress site.
 - Resolves provider API keys from Connectors-style options, constants, environment variables, or the `wp_ai_gateway_provider_api_key` filter.
-- Preserves provider-supplied authentication when a provider, such as Codex, owns its own OAuth or request-auth flow.
+- Preserves provider-supplied authentication when a provider owns its own request-auth flow.
 
 ## Endpoints
 
@@ -49,7 +49,7 @@ provider:model-id
 For example:
 
 ```text
-opencode:opencode-go/kimi-k2.6
+example-provider:example-model
 ```
 
 ## Setup
@@ -59,7 +59,7 @@ Install and activate the plugin on a WordPress 7.0+ site.
 Configure the site-default route:
 
 ```bash
-wp ai-gateway configure opencode opencode-go/kimi-k2.6
+wp ai-gateway configure example-provider example-model
 ```
 
 Generate a gateway bearer token:
@@ -87,11 +87,11 @@ Example status shape:
 ```json
 {
   "configured": true,
-  "provider": "codex",
-  "model": "gpt-5.5",
+  "provider": "example-provider",
+  "model": "example-model",
   "token_hash_exists": true,
   "ai_client_available": true,
-  "registered_providers": ["codex"],
+  "registered_providers": ["example-provider"],
   "provider_registered": true,
   "endpoints": {
     "models": "https://example.com/wp-json/wp-ai-gateway/v1/models",
@@ -107,16 +107,16 @@ WP AI Gateway binds provider API keys before dispatching through WordPress AI Cl
 Credential resolution order:
 
 - `wp_ai_gateway_provider_api_key` filter
-- Environment variable, e.g. `OPENCODE_API_KEY`
-- Constant, e.g. `OPENCODE_API_KEY`
-- Connectors-style option, e.g. `connectors_ai_opencode_api_key`
+- Environment variable, e.g. `EXAMPLE_PROVIDER_API_KEY`
+- Constant, e.g. `EXAMPLE_PROVIDER_API_KEY`
+- Connectors-style option, e.g. `connectors_ai_example_provider_api_key`
 
-This means a site with `ai-provider-for-opencode` and `connectors_ai_opencode_api_key` configured can expose OpenCode Go through `site-default` without giving the upstream OpenCode key to the external client.
+This means a site with a provider plugin and matching credential source configured can expose that provider through `site-default` without giving the upstream provider credential to the external client.
 
-Providers that supply their own request authentication, such as a Codex OAuth-capable provider, can be configured without `CODEX_API_KEY`, `OPENAI_API_KEY`, or another gateway-managed API key:
+Providers that supply their own request authentication can be configured without a gateway-managed API key:
 
 ```bash
-wp ai-gateway configure codex gpt-5.5
+wp ai-gateway configure example-provider example-model
 ```
 
 In that path the gateway validates only the external bearer token, then dispatches to the provider registry without injecting API-key authentication.
@@ -131,7 +131,7 @@ php -l tests/smoke.php
 php tests/smoke.php
 ```
 
-The smoke covers missing bearer token, invalid bearer token, unconfigured provider/model, `/models` shape, machine-readable status, and the codex-without-API-key dispatch path with a fake provider registry.
+The smoke covers missing bearer token, invalid bearer token, unconfigured provider/model, `/models` shape, `site-default` routing, provider-qualified model routing, machine-readable status, and provider-supplied auth without gateway API-key injection.
 
 ## OpenAI-Compatible Example
 
@@ -170,4 +170,4 @@ Future work:
 
 ## AI Assistance
 
-This initial plugin scaffold was drafted with AI assistance using OpenCode (GPT-5.5), then reviewed and directed by Chris Huber.
+This initial plugin scaffold was drafted with AI assistance using GPT-5.5, then reviewed and directed by Chris Huber.
