@@ -29,6 +29,7 @@ Configured provider and model
 - Authenticates external clients with a site-issued bearer token.
 - Routes `site-default` to the provider/model configured on the WordPress site.
 - Resolves provider API keys from Connectors-style options, constants, environment variables, or the `wp_ai_gateway_provider_api_key` filter.
+- Preserves provider-supplied authentication when a provider, such as Codex, owns its own OAuth or request-auth flow.
 
 ## Endpoints
 
@@ -69,9 +70,39 @@ wp ai-gateway token
 
 Store the printed token in the external client. It is stored on the site as a SHA-256 hash and is not shown again.
 
+For automation that needs the token value without WP-CLI's success message, use:
+
+```bash
+wp ai-gateway token --porcelain
+```
+
+Check setup status without exposing secret values:
+
+```bash
+wp ai-gateway status --format=json
+```
+
+Example status shape:
+
+```json
+{
+  "configured": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "token_hash_exists": true,
+  "ai_client_available": true,
+  "registered_providers": ["codex"],
+  "provider_registered": true,
+  "endpoints": {
+    "models": "https://example.com/wp-json/wp-ai-gateway/v1/models",
+    "chat_completions": "https://example.com/wp-json/wp-ai-gateway/v1/chat/completions"
+  }
+}
+```
+
 ## Provider Credentials
 
-WP AI Gateway binds provider credentials before dispatching through WordPress AI Client.
+WP AI Gateway binds provider API keys before dispatching through WordPress AI Client only when an API key is available from the gateway's credential sources.
 
 Credential resolution order:
 
@@ -81,6 +112,26 @@ Credential resolution order:
 - Connectors-style option, e.g. `connectors_ai_opencode_api_key`
 
 This means a site with `ai-provider-for-opencode` and `connectors_ai_opencode_api_key` configured can expose OpenCode Go through `site-default` without giving the upstream OpenCode key to the external client.
+
+Providers that supply their own request authentication, such as a Codex OAuth-capable provider, can be configured without `CODEX_API_KEY`, `OPENAI_API_KEY`, or another gateway-managed API key:
+
+```bash
+wp ai-gateway configure codex gpt-5.5
+```
+
+In that path the gateway validates only the external bearer token, then dispatches to the provider registry without injecting API-key authentication.
+
+## Smoke Tests
+
+This repository includes a lightweight PHP smoke test that stubs the WordPress and AI Client surfaces used by the plugin:
+
+```bash
+php -l plugin.php
+php -l tests/smoke.php
+php tests/smoke.php
+```
+
+The smoke covers missing bearer token, invalid bearer token, unconfigured provider/model, `/models` shape, machine-readable status, and the codex-without-API-key dispatch path with a fake provider registry.
 
 ## OpenAI-Compatible Example
 

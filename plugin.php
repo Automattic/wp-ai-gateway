@@ -77,24 +77,7 @@ function register_rest_routes(): void
  */
 function permission_callback(WP_REST_Request $request)
 {
-    if (current_user_can('manage_options')) {
-        return true;
-    }
-
-    $token = bearer_token($request);
-    if ('' === $token) {
-        return new WP_Error('wp_ai_gateway_missing_token', 'Missing bearer token.', ['status' => 401]);
-    }
-
-    $hash = get_option(OPTION_TOKEN_HASH, '');
-    if (!is_string($hash) || '' === $hash) {
-        return new WP_Error('wp_ai_gateway_not_configured', 'Gateway token is not configured.', ['status' => 403]);
-    }
-
-    if (!hash_equals($hash, hash('sha256', $token))) {
-        return new WP_Error('wp_ai_gateway_invalid_token', 'Invalid bearer token.', ['status' => 403]);
-    }
-
+    unset($request);
     return true;
 }
 
@@ -103,8 +86,13 @@ function permission_callback(WP_REST_Request $request)
  *
  * @return WP_REST_Response|WP_Error
  */
-function handle_models()
+function handle_models(WP_REST_Request $request)
 {
+    $authorized = authorize_gateway_request($request);
+    if ($authorized instanceof WP_REST_Response) {
+        return $authorized;
+    }
+
     $configured = configured_route();
     if ($configured instanceof WP_Error || $configured instanceof WP_REST_Response) {
         return $configured;
@@ -140,6 +128,11 @@ function handle_models()
  */
 function handle_chat_completions(WP_REST_Request $request)
 {
+    $authorized = authorize_gateway_request($request);
+    if ($authorized instanceof WP_REST_Response) {
+        return $authorized;
+    }
+
     $payload = $request->get_json_params();
     if (!is_array($payload)) {
         return openai_error('invalid_request_error', 'Request body must be JSON.', 400);
@@ -156,7 +149,7 @@ function handle_chat_completions(WP_REST_Request $request)
     }
 
     $registry = ai_registry();
-    if (!$registry || !method_exists($registry, 'getProviderModel') || !method_exists($registry, 'setProviderRequestAuthentication')) {
+    if (!$registry || !method_exists($registry, 'getProviderModel')) {
         return openai_error('server_error', 'WordPress AI Client provider registry is not available.', 500);
     }
 
@@ -223,6 +216,23 @@ function register_settings(): void
 {
     register_setting('wp_ai_gateway', OPTION_PROVIDER, ['type' => 'string', 'sanitize_callback' => 'sanitize_key']);
     register_setting('wp_ai_gateway', OPTION_MODEL, ['type' => 'string', 'sanitize_callback' => 'sanitize_text_field']);
+    register_setting('wp_ai_gateway', OPTION_TOKEN_HASH, ['type' => 'string', 'sanitize_callback' => __NAMESPACE__ . '\sanitize_token_hash']);
+}
+
+/**
+ * Sanitizes a stored gateway token hash.
+ *
+ * @param mixed $hash Token hash.
+ * @return string
+ */
+function sanitize_token_hash($hash): string
+{
+    if (!is_string($hash)) {
+        return '';
+    }
+
+    $hash = strtolower(trim($hash));
+    return preg_match('/^[a-f0-9]{64}$/', $hash) ? $hash : '';
 }
 
 /**
@@ -279,6 +289,39 @@ function configured_route()
 }
 
 /**
+ * Returns machine-readable gateway status without exposing secrets.
+ *
+ * @return array<string, mixed>
+ */
+function gateway_status(): array
+{
+    $provider = configured_provider();
+    $model = configured_model();
+    $registry = ai_registry();
+    $registered_providers = [];
+
+    if ($registry && method_exists($registry, 'getRegisteredProviderIds')) {
+        foreach ($registry->getRegisteredProviderIds() as $provider_id) {
+            $registered_providers[] = (string) $provider_id;
+        }
+    }
+
+    return [
+        'configured' => '' !== $provider && '' !== $model,
+        'provider' => $provider,
+        'model' => $model,
+        'token_hash_exists' => token_hash_exists(),
+        'ai_client_available' => null !== $registry,
+        'registered_providers' => $registered_providers,
+        'provider_registered' => '' !== $provider && in_array($provider, $registered_providers, true),
+        'endpoints' => [
+            'models' => rest_url(REST_NAMESPACE . '/models'),
+            'chat_completions' => rest_url(REST_NAMESPACE . '/chat/completions'),
+        ],
+    ];
+}
+
+/**
  * Resolves the route for a requested OpenAI-compatible model ID.
  *
  * @param string $requested_model Requested model.
@@ -324,6 +367,16 @@ function configured_model(): string
 }
 
 /**
+ * Returns whether a gateway token hash is configured.
+ *
+ * @return bool
+ */
+function token_hash_exists(): bool
+{
+    return '' !== sanitize_token_hash(get_option(OPTION_TOKEN_HASH, ''));
+}
+
+/**
  * Returns the WordPress AI Client registry when available.
  *
  * @return object|null
@@ -362,7 +415,11 @@ function bind_provider_api_key(object $registry, string $provider): void
         return;
     }
 
-    $registry->setProviderRequestAuthentication($provider, new $class($key));
+    try {
+        $registry->setProviderRequestAuthentication($provider, new $class($key));
+    } catch (\Throwable $e) {
+        // Providers with custom or provider-supplied auth should continue without gateway-injected API keys.
+    }
 }
 
 /**
@@ -573,6 +630,39 @@ function bearer_token(WP_REST_Request $request): string
 }
 
 /**
+ * Checks gateway access and returns OpenAI-shaped errors for REST endpoints.
+ *
+ * @param WP_REST_Request|null $request REST request.
+ * @return true|WP_REST_Response
+ */
+function authorize_gateway_request(?WP_REST_Request $request = null)
+{
+    if (current_user_can('manage_options')) {
+        return true;
+    }
+
+    if (!$request instanceof WP_REST_Request) {
+        return openai_error('authentication_error', 'Missing bearer token.', 401);
+    }
+
+    $token = bearer_token($request);
+    if ('' === $token) {
+        return openai_error('authentication_error', 'Missing bearer token.', 401);
+    }
+
+    $hash = sanitize_token_hash(get_option(OPTION_TOKEN_HASH, ''));
+    if ('' === $hash) {
+        return openai_error('authentication_error', 'Gateway token is not configured.', 403);
+    }
+
+    if (!hash_equals($hash, hash('sha256', $token))) {
+        return openai_error('authentication_error', 'Invalid bearer token.', 403);
+    }
+
+    return true;
+}
+
+/**
  * Converts a WP_Error to an OpenAI-compatible error response.
  *
  * @param WP_Error $error WordPress error.
@@ -623,13 +713,23 @@ class CliCommand
      * ## EXAMPLES
      *
      *     wp ai-gateway token
+     *     wp ai-gateway token --porcelain
      *
+     * @param list<string>         $args Command arguments.
+     * @param array<string,string> $assoc_args Command options.
      * @return void
      */
-    public function token(): void
+    public function token(array $args = [], array $assoc_args = []): void
     {
+        unset($args);
+
         $token = 'wpag_' . wp_generate_password(48, false, false);
         update_option(OPTION_TOKEN_HASH, hash('sha256', $token), false);
+
+        if (isset($assoc_args['porcelain'])) {
+            \WP_CLI::line($token);
+            return;
+        }
 
         \WP_CLI::success('Gateway token generated. Store it now; it will not be shown again.');
         \WP_CLI::line($token);
@@ -655,10 +755,68 @@ class CliCommand
      */
     public function configure(array $args): void
     {
+        if (count($args) < 2) {
+            \WP_CLI::error('Usage: wp ai-gateway configure <provider> <model>');
+        }
+
         [$provider, $model] = $args;
         update_option(OPTION_PROVIDER, sanitize_key($provider), false);
         update_option(OPTION_MODEL, sanitize_text_field($model), false);
 
         \WP_CLI::success(sprintf('Gateway site-default route set to %s / %s.', $provider, $model));
+    }
+
+    /**
+     * Reports gateway setup status without exposing token values.
+     *
+     * ## OPTIONS
+     *
+     * [--format=<format>]
+     * : Output format. Supports table, json, yaml, count.
+     * ---
+     * default: table
+     * options:
+     *   - table
+     *   - json
+     *   - yaml
+     *   - count
+     * ---
+     *
+     * ## EXAMPLES
+     *
+     *     wp ai-gateway status --format=json
+     *
+     * @param list<string>         $args Command arguments.
+     * @param array<string,string> $assoc_args Command options.
+     * @return void
+     */
+    public function status(array $args, array $assoc_args): void
+    {
+        $format = $assoc_args['format'] ?? 'table';
+        $status = gateway_status();
+
+        if ('json' === $format) {
+            \WP_CLI::line((string) wp_json_encode($status));
+            return;
+        }
+
+        $row = [];
+        foreach ($status as $key => $value) {
+            if (is_array($value)) {
+                $value = wp_json_encode($value);
+            } elseif (is_bool($value)) {
+                $value = $value ? 'true' : 'false';
+            }
+            $row[$key] = (string) $value;
+        }
+
+        if (function_exists('WP_CLI\\Utils\\format_items')) {
+            \WP_CLI\Utils\format_items($format, [$row], array_keys($row));
+            return;
+        }
+
+        foreach ($row as $key => $value) {
+            \WP_CLI::line($key . ': ' . $value);
+        }
     }
 }
