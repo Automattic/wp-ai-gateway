@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: WP AI Gateway
- * Plugin URI: https://github.com/chubes4/wp-ai-gateway
+ * Plugin URI: https://github.com/Automattic/wp-ai-gateway
  * Description: OpenAI-compatible AI gateway for WordPress, backed by the WordPress AI Client.
  * Requires at least: 7.0
  * Requires PHP: 7.4
