@@ -25,7 +25,7 @@ Configured provider and model
 
 ## What It Does
 
-- Exposes OpenAI-compatible `/models` and `/chat/completions` REST endpoints.
+- Exposes OpenAI-compatible `/models`, `/chat/completions`, and `/embeddings` REST endpoints.
 - Authenticates external clients with a site-issued bearer token.
 - Routes `site-default` to the provider/model configured on the WordPress site.
 - Resolves provider API keys from Connectors-style options, constants, environment variables, or the `wp_ai_gateway_provider_api_key` filter.
@@ -66,9 +66,12 @@ Core files:
 ```text
 GET  /wp-json/wp-ai-gateway/v1/models
 POST /wp-json/wp-ai-gateway/v1/chat/completions
+POST /wp-json/wp-ai-gateway/v1/embeddings
 ```
 
-The `/models` response always includes `site-default`, plus provider-qualified aliases discovered from the site's registered WordPress AI Client providers when model discovery succeeds.
+The `/models` response always includes `site-default`, plus provider-qualified aliases discovered from the site's registered WordPress AI Client providers when model discovery succeeds. Discovered provider models include provider-neutral `capabilities` and `gateway_metadata` fields so retrieval workflows can identify `embedding_generation` support without knowing provider-specific model shapes.
+
+Embedding requests use the same `site-default` and `provider:model-id` routing as chat completions. Execution requires an upstream WordPress AI Client embedding generation result API. Until that provider-neutral upstream API is available, the gateway returns an OpenAI-shaped `501 unsupported_capability` response instead of making provider-specific HTTP calls.
 
 External model aliases use this shape:
 
@@ -161,7 +164,7 @@ php -l tests/smoke.php
 php tests/smoke.php
 ```
 
-The smoke covers missing bearer token, invalid bearer token, unconfigured provider/model, `/models` shape, `site-default` routing, provider-qualified model routing, machine-readable status, and provider-supplied auth without gateway API-key injection.
+The smoke covers missing bearer token, invalid bearer token, unconfigured provider/model, `/models` shape with embedding metadata, `site-default` routing, provider-qualified model routing, embedding response usage/request metadata, machine-readable status, and provider-supplied auth without gateway API-key injection.
 
 ## OpenAI-Compatible Example
 
@@ -186,11 +189,14 @@ In scope now:
 - Bearer-token auth
 - `site-default` model routing
 - OpenAI-compatible text chat responses
+- OpenAI-compatible embedding request routing surface
+- Provider-neutral model capability and retrieval metadata
 - WordPress AI Client provider dispatch
 
 Future work:
 
-- Usage metering
+- Full embedding execution once WordPress AI Client exposes provider-neutral embedding results
+- Usage metering beyond provider-returned usage metadata
 - Budgets and quotas
 - Multiple client tokens
 - Streaming

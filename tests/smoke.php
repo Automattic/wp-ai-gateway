@@ -120,6 +120,29 @@ namespace {
             }
             return 'ok from fake provider';
         }
+
+        public function generateEmbeddingResult(): FakeEmbeddingResult
+        {
+            if (!$this->model || [] === $this->messages) {
+                throw new RuntimeException('Prompt was not configured.');
+            }
+            return new FakeEmbeddingResult();
+        }
+    }
+
+    class FakeEmbeddingResult
+    {
+        public function toArray(): array
+        {
+            return [
+                'id' => 'embd-fake-request',
+                'embeddings' => [[0.1, 0.2, 0.3]],
+                'tokenUsage' => [
+                    'promptTokens' => 3,
+                    'totalTokens' => 3,
+                ],
+            ];
+        }
     }
 
     function assert_true(bool $condition, string $message): void
@@ -182,6 +205,7 @@ namespace WpAiGatewaySmoke {
     class FakeModelMetadata
     {
         public function getId(): string { return 'gpt-5.5'; }
+        public function getSupportedCapabilities(): array { return ['text_generation', 'embedding_generation']; }
     }
 
     class FakeModelMetadataDirectory
@@ -237,6 +261,8 @@ namespace {
     $models = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer valid-token']));
     assert_true(200 === $models->get_status(), 'Configured /models should return 200.');
     assert_true('site-default' === $models->get_data()['data'][0]['id'], '/models should include site-default.');
+    assert_true(in_array('embedding_generation', $models->get_data()['data'][1]['capabilities'], true), '/models should expose embedding capability metadata.');
+    assert_true(true === $models->get_data()['data'][1]['gateway_metadata']['retrieval']['embedding'], '/models should expose retrieval embedding metadata.');
 
     $chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
@@ -250,6 +276,15 @@ namespace {
         ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
     ));
     assert_true(200 === $provider_qualified_chat->get_status(), 'Provider-qualified model path should return 200 with fake provider.');
+
+    $embedding = Chubes4\WpAiGateway\RestController::handle_embeddings(new WP_REST_Request(
+        ['Authorization' => 'Bearer valid-token'],
+        ['model' => 'example-provider:example-model', 'input' => 'hello']
+    ));
+    assert_true(200 === $embedding->get_status(), 'Provider-qualified embedding path should return 200 with fake provider.');
+    assert_true('embedding' === $embedding->get_data()['data'][0]['object'], 'Embedding response should include OpenAI embedding objects.');
+    assert_true('embd-fake-request' === $embedding->get_data()['gateway_metadata']['request_id'], 'Embedding response should expose request metadata.');
+    assert_true(3 === $embedding->get_data()['usage']['totalTokens'], 'Embedding response should expose usage metadata.');
 
     $status = Chubes4\WpAiGateway\CliCommand::gateway_status();
     assert_true(true === $status['configured'], 'Status should report configured route.');

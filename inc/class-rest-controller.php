@@ -44,6 +44,16 @@ final class RestController
                 'permission_callback' => [self::class, 'permission_callback'],
             ]
         );
+
+        register_rest_route(
+            REST_NAMESPACE,
+            '/embeddings',
+            [
+                'methods' => 'POST',
+                'callback' => [self::class, 'handle_embeddings'],
+                'permission_callback' => [self::class, 'permission_callback'],
+            ]
+        );
     }
 
     /**
@@ -84,8 +94,13 @@ final class RestController
         if ($registry && method_exists($registry, 'getRegisteredProviderIds')) {
             foreach ($registry->getRegisteredProviderIds() as $provider_id) {
                 $provider_models = AiClientBridge::provider_models((string) $provider_id);
-                foreach ($provider_models as $model_id) {
-                    $models[] = OpenAiResponse::model_payload(ProviderRouter::model_alias((string) $provider_id, $model_id), 'wordpress');
+                foreach ($provider_models as $model) {
+                    $models[] = OpenAiResponse::model_payload(
+                        ProviderRouter::model_alias((string) $provider_id, $model['id']),
+                        'wordpress',
+                        $model['capabilities'],
+                        $model['metadata']
+                    );
                 }
             }
         }
@@ -149,6 +164,46 @@ final class RestController
                 ],
                 'usage' => null,
             ]
+        );
+    }
+
+    /**
+     * Handles OpenAI-compatible embeddings.
+     *
+     * @param WP_REST_Request $request REST request.
+     * @return WP_REST_Response|WP_Error
+     */
+    public static function handle_embeddings(WP_REST_Request $request)
+    {
+        $authorized = TokenAuthenticator::authorize($request);
+        if ($authorized instanceof WP_REST_Response) {
+            return $authorized;
+        }
+
+        $payload = $request->get_json_params();
+        if (!is_array($payload)) {
+            return OpenAiResponse::error('invalid_request_error', 'Request body must be JSON.', 400);
+        }
+
+        if (!array_key_exists('input', $payload)) {
+            return OpenAiResponse::error('invalid_request_error', 'Request body must include input.', 400);
+        }
+
+        $route = ProviderRouter::route_for_requested_model(is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT);
+        if ($route instanceof WP_REST_Response || $route instanceof WP_Error) {
+            return $route;
+        }
+
+        $embeddings = AiClientBridge::generate_embeddings($route, $payload);
+        if ($embeddings instanceof WP_REST_Response) {
+            return $embeddings;
+        }
+
+        return OpenAiResponse::embedding_payload(
+            is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT,
+            $embeddings['embeddings'],
+            $embeddings['usage'],
+            $embeddings['request_id']
         );
     }
 }
