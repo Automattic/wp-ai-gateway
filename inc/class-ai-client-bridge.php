@@ -73,10 +73,10 @@ final class AiClientBridge
     }
 
     /**
-     * Returns provider model IDs for the OpenAI-compatible /models surface.
+     * Returns provider model metadata for the OpenAI-compatible /models surface.
      *
      * @param string $provider_id Provider ID.
-     * @return list<string>
+     * @return list<array{id:string,capabilities:list<string>,metadata:array<string,mixed>}>
      */
     public static function provider_models(string $provider_id): array
     {
@@ -94,14 +94,67 @@ final class AiClientBridge
             return [];
         }
 
-        $ids = [];
+        $models_data = [];
         foreach ($models as $model) {
             if (is_object($model) && method_exists($model, 'getId')) {
-                $ids[] = (string) $model->getId();
+                $capabilities = self::model_capabilities($model);
+                $models_data[] = [
+                    'id' => (string) $model->getId(),
+                    'capabilities' => $capabilities,
+                    'metadata' => [
+                        'provider' => sanitize_key($provider_id),
+                        'model' => (string) $model->getId(),
+                        'retrieval' => [
+                            'embedding' => in_array('embedding_generation', $capabilities, true),
+                        ],
+                        'policy' => [
+                            'retention' => null,
+                            'no_training' => null,
+                            'region' => null,
+                        ],
+                    ],
+                ];
             }
         }
 
-        return $ids;
+        return $models_data;
+    }
+
+    /**
+     * Generates embeddings through WordPress AI Client for a resolved provider route.
+     *
+     * @param array{provider:string,model:string} $route Resolved provider route.
+     * @param array<string, mixed>                $payload OpenAI-compatible request payload.
+     * @return array{embeddings:list<list<float|int>>,usage:array<string,mixed>|null,request_id:string|null}|WP_REST_Response
+     */
+    public static function generate_embeddings(array $route, array $payload)
+    {
+        $registry = self::registry();
+        if (!$registry || !method_exists($registry, 'getProviderModel')) {
+            return OpenAiResponse::error('server_error', 'WordPress AI Client provider registry is not available.', 500);
+        }
+
+        self::bind_provider_api_key($registry, $route['provider']);
+
+        try {
+            $model = $registry->getProviderModel($route['provider'], $route['model'], self::model_config_from_payload($payload));
+            $prompt = wp_ai_client_prompt(self::normalize_embedding_input($payload['input']));
+            $prompt = $prompt->using_model($model);
+
+            if (!method_exists($prompt, 'generateEmbeddingResult')) {
+                return OpenAiResponse::error(
+                    'unsupported_capability',
+                    'Embedding generation requires upstream WordPress AI Client embedding result support.',
+                    501
+                );
+            }
+
+            $result = $prompt->generateEmbeddingResult();
+        } catch (\Throwable $e) {
+            return OpenAiResponse::error('server_error', $e->getMessage(), 500);
+        }
+
+        return self::embedding_result_to_array($result);
     }
 
     /**
@@ -211,6 +264,117 @@ final class AiClientBridge
         }
 
         return $normalized;
+    }
+
+    /**
+     * Normalizes OpenAI embedding input into user messages.
+     *
+     * @param mixed $input OpenAI embedding input.
+     * @return list<object>
+     */
+    private static function normalize_embedding_input($input): array
+    {
+        $items = is_array($input) ? $input : [$input];
+        $messages = [];
+
+        foreach ($items as $item) {
+            if (is_array($item)) {
+                $item = implode(' ', array_map('strval', $item));
+            }
+
+            if (!is_scalar($item)) {
+                continue;
+            }
+
+            $text = trim((string) $item);
+            if ('' === $text) {
+                continue;
+            }
+
+            $messages[] = new \WordPress\AiClient\Messages\DTO\Message(
+                \WordPress\AiClient\Messages\Enums\MessageRoleEnum::user(),
+                [new \WordPress\AiClient\Messages\DTO\MessagePart($text)]
+            );
+        }
+
+        return $messages;
+    }
+
+    /**
+     * Extracts model capabilities from WordPress AI Client metadata.
+     *
+     * @param object $model Model metadata object.
+     * @return list<string>
+     */
+    private static function model_capabilities(object $model): array
+    {
+        if (!method_exists($model, 'getSupportedCapabilities')) {
+            return [];
+        }
+
+        $capabilities = [];
+        foreach ($model->getSupportedCapabilities() as $capability) {
+            if (is_object($capability) && isset($capability->value) && is_string($capability->value)) {
+                $capabilities[] = $capability->value;
+            } elseif (is_scalar($capability)) {
+                $capabilities[] = (string) $capability;
+            }
+        }
+
+        return array_values(array_unique($capabilities));
+    }
+
+    /**
+     * Converts a future WordPress AI Client embedding result into OpenAI-compatible data.
+     *
+     * @param mixed $result WordPress AI Client embedding result.
+     * @return array{embeddings:list<list<float|int>>,usage:array<string,mixed>|null,request_id:string|null}|WP_REST_Response
+     */
+    private static function embedding_result_to_array($result)
+    {
+        $data = is_object($result) && method_exists($result, 'toArray') ? $result->toArray() : $result;
+        if (!is_array($data)) {
+            return OpenAiResponse::error('server_error', 'Embedding result must be array-like.', 500);
+        }
+
+        $embeddings = $data['embeddings'] ?? ($data['additionalData']['embeddings'] ?? null);
+        if (!is_array($embeddings)) {
+            return OpenAiResponse::error('server_error', 'Embedding result did not include embeddings.', 500);
+        }
+
+        return [
+            'embeddings' => self::normalize_embedding_vectors($embeddings),
+            'usage' => is_array($data['usage'] ?? null) ? $data['usage'] : (is_array($data['tokenUsage'] ?? null) ? $data['tokenUsage'] : null),
+            'request_id' => is_string($data['id'] ?? null) ? $data['id'] : null,
+        ];
+    }
+
+    /**
+     * Normalizes embedding vectors into numeric lists.
+     *
+     * @param array<mixed> $embeddings Embedding vectors.
+     * @return list<list<float|int>>
+     */
+    private static function normalize_embedding_vectors(array $embeddings): array
+    {
+        $vectors = [];
+        foreach ($embeddings as $embedding) {
+            if (!is_array($embedding)) {
+                continue;
+            }
+
+            $vector = [];
+            foreach ($embedding as $value) {
+                if (is_int($value) || is_float($value)) {
+                    $vector[] = $value;
+                } elseif (is_numeric($value)) {
+                    $vector[] = (float) $value;
+                }
+            }
+            $vectors[] = $vector;
+        }
+
+        return $vectors;
     }
 
     /**

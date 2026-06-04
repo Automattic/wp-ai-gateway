@@ -60,18 +60,55 @@ final class OpenAiResponse
     /**
      * Creates a model payload in OpenAI's list shape.
      *
-     * @param string $id Model ID.
-     * @param string $owned_by Owner label.
+     * @param string               $id Model ID.
+     * @param string               $owned_by Owner label.
+     * @param list<string>         $capabilities Provider-neutral model capabilities.
+     * @param array<string, mixed> $gateway_metadata Gateway routing and retrieval metadata.
      * @return array<string, mixed>
      */
-    public static function model_payload(string $id, string $owned_by): array
+    public static function model_payload(string $id, string $owned_by, array $capabilities = [], array $gateway_metadata = []): array
     {
         return [
             'id' => $id,
             'object' => 'model',
             'created' => 0,
             'owned_by' => $owned_by,
+            'capabilities' => array_values(array_unique($capabilities)),
+            'gateway_metadata' => $gateway_metadata,
         ];
+    }
+
+    /**
+     * Creates an OpenAI-compatible embedding response.
+     *
+     * @param string                     $model Requested model ID.
+     * @param list<list<float|int>>      $embeddings Embedding vectors.
+     * @param array<string, mixed>|null  $usage Usage metadata.
+     * @param string|null                $request_id Upstream request/result identifier.
+     * @return WP_REST_Response
+     */
+    public static function embedding_payload(string $model, array $embeddings, ?array $usage, ?string $request_id): WP_REST_Response
+    {
+        $data = [];
+        foreach ($embeddings as $index => $embedding) {
+            $data[] = [
+                'object' => 'embedding',
+                'embedding' => $embedding,
+                'index' => $index,
+            ];
+        }
+
+        return new WP_REST_Response(
+            [
+                'object' => 'list',
+                'data' => $data,
+                'model' => $model,
+                'usage' => $usage,
+                'gateway_metadata' => [
+                    'request_id' => $request_id,
+                ],
+            ]
+        );
     }
 
     /**
