@@ -86,17 +86,22 @@ final class RestController
             return $configured;
         }
 
-        $models = [
-            OpenAiResponse::model_payload(MODEL_SITE_DEFAULT, 'wordpress'),
-        ];
+        $models = [];
+        if (TokenAuthenticator::model_allowed($authorized, MODEL_SITE_DEFAULT)) {
+            $models[] = OpenAiResponse::model_payload(MODEL_SITE_DEFAULT, 'wordpress');
+        }
 
         $registry = AiClientBridge::registry();
         if ($registry && method_exists($registry, 'getRegisteredProviderIds')) {
             foreach ($registry->getRegisteredProviderIds() as $provider_id) {
                 $provider_models = AiClientBridge::provider_models((string) $provider_id);
                 foreach ($provider_models as $model) {
+                    $alias = ProviderRouter::model_alias((string) $provider_id, $model['id']);
+                    if (!TokenAuthenticator::model_allowed($authorized, $alias)) {
+                        continue;
+                    }
                     $models[] = OpenAiResponse::model_payload(
-                        ProviderRouter::model_alias((string) $provider_id, $model['id']),
+                        $alias,
                         'wordpress',
                         $model['capabilities'],
                         $model['metadata']
@@ -136,7 +141,12 @@ final class RestController
             return OpenAiResponse::error('invalid_request_error', 'Request body must include messages.', 400);
         }
 
-        $route = ProviderRouter::route_for_requested_model(is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT);
+        $requested_model = is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT;
+        if (!TokenAuthenticator::model_allowed($authorized, $requested_model)) {
+            return OpenAiResponse::error('permission_error', 'The authenticated client is not allowed to use this model.', 403);
+        }
+
+        $route = ProviderRouter::route_for_requested_model($requested_model);
         if ($route instanceof WP_REST_Response || $route instanceof WP_Error) {
             return $route;
         }
@@ -189,7 +199,12 @@ final class RestController
             return OpenAiResponse::error('invalid_request_error', 'Request body must include input.', 400);
         }
 
-        $route = ProviderRouter::route_for_requested_model(is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT);
+        $requested_model = is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT;
+        if (!TokenAuthenticator::model_allowed($authorized, $requested_model)) {
+            return OpenAiResponse::error('permission_error', 'The authenticated client is not allowed to use this model.', 403);
+        }
+
+        $route = ProviderRouter::route_for_requested_model($requested_model);
         if ($route instanceof WP_REST_Response || $route instanceof WP_Error) {
             return $route;
         }

@@ -26,7 +26,8 @@ Configured provider and model
 ## What It Does
 
 - Exposes OpenAI-compatible `/models`, `/chat/completions`, and `/embeddings` REST endpoints.
-- Authenticates external clients with a site-issued bearer token.
+- Authenticates external clients with independently revocable site-issued bearer tokens.
+- Supports short-lived, WordPress-user-bound runtime credentials limited to `site-default`.
 - Routes `site-default` to the provider/model configured on the WordPress site.
 - Resolves provider API keys from Connectors-style options, constants, environment variables, or the `wp_ai_gateway_provider_api_key` filter.
 - Preserves provider-supplied authentication when a provider owns its own request-auth flow.
@@ -41,7 +42,7 @@ plugin.php
   v
 Plugin bootstrap
   |-- RestController       OpenAI-compatible REST routes
-  |-- TokenAuthenticator   Gateway token minting and validation
+  |-- TokenAuthenticator   Scoped client minting, policy, and validation
   |-- ProviderRouter       site-default and provider:model-id routing
   |-- AiClientBridge       WordPress AI Client registry/model dispatch
   |-- OpenAiResponse       OpenAI-compatible payload/error helpers
@@ -95,19 +96,37 @@ Configure the site-default route:
 wp ai-gateway configure example-provider example-model
 ```
 
-Generate a gateway bearer token:
+Generate or rotate the trusted legacy site-wide bearer token:
 
 ```bash
 wp ai-gateway token
 ```
 
-Store the printed token in the external client. It is stored on the site as a SHA-256 hash and is not shown again.
+Store the printed token in the trusted external client. It is stored on the site as a SHA-256 hash and is not shown again. Running this command again invalidates the previous legacy token.
 
 For automation that needs the token value without WP-CLI's success message, use:
 
 ```bash
 wp ai-gateway token --porcelain
 ```
+
+For a hosted or ephemeral runtime, issue a constrained credential instead:
+
+```bash
+wp ai-gateway runtime-token --user=123 --expires-in=3600 --label=runtime-123 --porcelain
+```
+
+Runtime credentials are independently revocable, bound to an existing WordPress user, limited to `site-default`, and expire after one hour by default. The plaintext token is returned once; only its SHA-256 hash is stored.
+
+List non-secret client metadata, rotate one client, or revoke one client without affecting others:
+
+```bash
+wp ai-gateway clients --format=json
+wp ai-gateway rotate <client-id> --expires-in=3600 --porcelain
+wp ai-gateway revoke <client-id>
+```
+
+When a scoped credential authenticates, the gateway establishes its bound WordPress user and fires `wp_ai_gateway_client_authenticated` with a non-secret principal. Provider integrations can use that hook to bind user-owned provider authentication for the request.
 
 Check setup status without exposing secret values:
 
@@ -123,6 +142,7 @@ Example status shape:
   "provider": "example-provider",
   "model": "example-model",
   "token_hash_exists": true,
+  "client_count": 1,
   "ai_client_available": true,
   "registered_providers": ["example-provider"],
   "provider_registered": true,
@@ -186,7 +206,8 @@ This is intentionally small for the first version.
 
 In scope now:
 
-- Bearer-token auth
+- Legacy site-wide bearer-token auth
+- Multiple scoped client credentials with expiry, revocation, rotation, user binding, and model allowlists
 - `site-default` model routing
 - OpenAI-compatible text chat responses
 - OpenAI-compatible embedding request routing surface
@@ -198,11 +219,9 @@ Future work:
 - Full embedding execution once WordPress AI Client exposes provider-neutral embedding results
 - Usage metering beyond provider-returned usage metadata
 - Budgets and quotas
-- Multiple client tokens
 - Streaming
 - Admin UI for token rotation
 - Rich multimodal message support
-- Per-client model allowlists
 
 ## AI Assistance
 
