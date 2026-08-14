@@ -25,8 +25,11 @@ final class StreamingProxy
      * @param callable        $emit Receives an event name and event data.
      * @return array{status:int,headers:array<string,string>}|WP_REST_Response|WP_Error
      */
-    public static function stream_chat_completions(WP_REST_Request $request, callable $emit)
+    public static function stream_openai_request(WP_REST_Request $request, string $path, callable $emit)
     {
+        if (!in_array($path, ['/chat/completions', '/responses'], true)) {
+            return OpenAiResponse::error('invalid_request_error', 'Unsupported streaming route.', 404);
+        }
         $principal = TokenAuthenticator::authorize($request);
         if ($principal instanceof WP_REST_Response) {
             return $principal;
@@ -36,8 +39,11 @@ final class StreamingProxy
         if (!is_array($payload)) {
             return OpenAiResponse::error('invalid_request_error', 'Request body must be JSON.', 400);
         }
-        if (!is_array($payload['messages'] ?? null) || [] === $payload['messages']) {
+        if ('/chat/completions' === $path && (!is_array($payload['messages'] ?? null) || [] === $payload['messages'])) {
             return OpenAiResponse::error('invalid_request_error', 'Request body must include messages.', 400);
+        }
+        if ('/responses' === $path && !array_key_exists('input', $payload)) {
+            return OpenAiResponse::error('invalid_request_error', 'Request body must include input.', 400);
         }
         if (false === ($payload['stream'] ?? true)) {
             return OpenAiResponse::error('invalid_request_error', 'Streaming dispatch requires stream=true.', 400);
@@ -53,7 +59,7 @@ final class StreamingProxy
             return $route;
         }
 
-        $url = apply_filters('wp_ai_gateway_stream_upstream_url', '', $route, $payload);
+        $url = apply_filters('wp_ai_gateway_stream_upstream_url', '', $route, $payload, $path);
         if (!self::valid_upstream_url($url)) {
             return OpenAiResponse::error('server_error', 'Streaming upstream URL is not configured.', 500);
         }
@@ -66,14 +72,14 @@ final class StreamingProxy
         if ('' !== $api_key) {
             $headers['Authorization'] = 'Bearer ' . $api_key;
         }
-        $headers = apply_filters('wp_ai_gateway_stream_upstream_headers', $headers, $route, $principal);
+        $headers = apply_filters('wp_ai_gateway_stream_upstream_headers', $headers, $route, $principal, $path);
         if (!is_array($headers)) {
             return OpenAiResponse::error('server_error', 'Streaming upstream headers are invalid.', 500);
         }
 
         $payload['model'] = $route['model'];
         $payload['stream'] = true;
-        $payload = apply_filters('wp_ai_gateway_stream_upstream_payload', $payload, $route, $principal);
+        $payload = apply_filters('wp_ai_gateway_stream_upstream_payload', $payload, $route, $principal, $path);
         if (!is_array($payload)) {
             return OpenAiResponse::error('server_error', 'Streaming upstream payload is invalid.', 500);
         }

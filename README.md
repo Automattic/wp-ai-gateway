@@ -131,11 +131,11 @@ wp ai-gateway revoke <client-id>
 
 When a scoped credential authenticates, the gateway establishes its bound WordPress user and fires `wp_ai_gateway_client_authenticated` with a non-secret principal. Provider integrations can use that hook to bind user-owned provider authentication for the request.
 
-Site-owned control planes can use `wp_ai_gateway_stream_openai_request()` when the workload cannot reach the WordPress REST API directly. The callback receives a `start` event with upstream status and safe response headers, each exact upstream body `chunk`, and an `end` event. An upstream failure after streaming starts is reported in the terminal event and as the function result. Control planes may frame those events for transport, but should write each chunk to the OpenAI-compatible client unchanged.
+Site-owned control planes can use `wp_ai_gateway_stream_openai_request()` when the workload cannot reach the WordPress REST API directly. Its optional fourth argument selects `/chat/completions` or `/responses`. The callback receives a `start` event with upstream status and safe response headers, each exact upstream body `chunk`, and an `end` event. An upstream failure after streaming starts is reported in the terminal event and as the function result. Control planes may frame those events for transport, but should write each chunk to the OpenAI client unchanged.
 
 Streaming integrations configure the provider-neutral upstream boundary with these filters:
 
-- `wp_ai_gateway_stream_upstream_url` returns the credential-free HTTPS chat-completions URL.
+- `wp_ai_gateway_stream_upstream_url` returns the credential-free HTTPS upstream URL for the selected route.
 - `wp_ai_gateway_stream_upstream_headers` adds or replaces site-owned upstream authentication headers.
 - `wp_ai_gateway_stream_upstream_payload` adapts the authenticated request to the configured upstream model contract.
 - `wp_ai_gateway_stream_transport` optionally replaces cURL while preserving the same start/chunk/end callback contract.

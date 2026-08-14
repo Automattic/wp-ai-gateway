@@ -360,15 +360,23 @@ namespace {
         unset($key);
         return 'example-provider' === $provider ? 'site-owned-secret' : '';
     };
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_url'][] = static function ($url, array $route): string {
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_url'][] = static function ($url, array $route, array $payload, string $path): string {
         unset($url);
         assert_true('example-provider' === $route['provider'], 'Streaming should use the configured provider route.');
-        return 'https://provider.example/v1/chat/completions';
+        unset($payload);
+        return 'https://provider.example/v1' . $path;
     };
     $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_payload'][] = static function (array $payload): array {
-        $payload['max_completion_tokens'] = $payload['max_tokens'] ?? null;
-        unset($payload['max_tokens']);
+        if (isset($payload['max_tokens'])) {
+            $payload['max_completion_tokens'] = $payload['max_tokens'];
+            unset($payload['max_tokens']);
+        }
         return $payload;
+    };
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_headers'][] = static function (array $headers, array $route, array $principal, string $path): array {
+        unset($route, $principal);
+        $headers['X-Gateway-Route'] = $path;
+        return $headers;
     };
     $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'][] = static function ($transport) use ($upstream_chunks): callable {
         unset($transport);
@@ -376,6 +384,7 @@ namespace {
             $payload = json_decode($body, true);
             assert_true('https://provider.example/v1/chat/completions' === $url, 'Streaming should target the site-configured HTTPS URL.');
             assert_true('Bearer site-owned-secret' === $headers['Authorization'], 'Streaming should replace client auth with site-owned provider auth.');
+            assert_true('/chat/completions' === $headers['X-Gateway-Route'], 'Streaming headers should receive the selected route.');
             assert_true('example-model' === $payload['model'], 'Streaming should rewrite site-default to the configured upstream model.');
             assert_true(true === $payload['stream'], 'Streaming should force the upstream stream flag.');
             assert_true(128 === $payload['max_completion_tokens'] && !isset($payload['max_tokens']), 'Streaming should apply site-owned upstream payload adaptation.');
@@ -399,6 +408,35 @@ namespace {
     assert_true(['start', 'chunk', 'chunk', 'chunk', 'end'] === array_column($stream_events, 0), 'Streaming should preserve event order and upstream chunk boundaries.');
     assert_true($upstream_chunks === array_column(array_slice($stream_events, 1, 3), 1), 'Streaming should carry exact upstream bytes without parsing or reconstruction.');
     assert_true(7 === $GLOBALS['wp_ai_gateway_current_user_id'], 'Streaming should establish the credential-bound user.');
+
+    $responses_events = [];
+    $responses_chunks = ["event: response.output_text.delta\ndata: {\"delta\":\"North\"}\n\n", "event: response.completed\ndata: {\"response\":{\"id\":\"resp-one\"}}\n\n"];
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'] = [static function () use ($responses_chunks): callable {
+        return static function (string $url, array $headers, string $body, callable $emit) use ($responses_chunks): array {
+            $payload = json_decode($body, true);
+            assert_true('https://provider.example/v1/responses' === $url, 'Responses streaming should use its selected upstream route.');
+            assert_true('/responses' === $headers['X-Gateway-Route'], 'Responses headers should receive the selected route.');
+            assert_true('example-model' === $payload['model'] && true === $payload['stream'], 'Responses streaming should apply the configured model and stream flag.');
+            assert_true('hello' === $payload['input'], 'Responses streaming should preserve native input payloads.');
+            $response = ['status' => 200, 'headers' => ['content-type' => 'text/event-stream']];
+            $emit('start', $response);
+            foreach ($responses_chunks as $chunk) {
+                $emit('chunk', $chunk);
+            }
+            return $response;
+        };
+    }];
+    $responses_result = wp_ai_gateway_stream_openai_request(
+        ['model' => 'site-default', 'stream' => true, 'input' => 'hello'],
+        $mediated['token'],
+        static function (string $event, $data) use (&$responses_events): void {
+            $responses_events[] = [$event, $data];
+        },
+        '/responses'
+    );
+    assert_true(200 === $responses_result['status'], 'Native Responses API streaming should return upstream status metadata.');
+    assert_true($responses_chunks === array_column(array_slice($responses_events, 1, 2), 1), 'Responses API chunks should cross the gateway unchanged.');
+    assert_true('end' === $responses_events[3][0], 'Responses API streaming should terminate exactly once.');
 
     $disallowed_stream = wp_ai_gateway_stream_openai_request(
         ['model' => 'example-provider:example-model', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],

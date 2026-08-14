@@ -41,21 +41,23 @@ if (!function_exists('wp_ai_gateway_stream_openai_request')) {
      *
      * @param array<string,mixed> $payload JSON request payload.
      * @param callable            $emit Receives (string $event, mixed $data).
+     * @param string              $path OpenAI streaming route.
      * @return array{status:int,headers:array<string,string>}|WP_REST_Response|WP_Error
      */
-    function wp_ai_gateway_stream_openai_request(array $payload, string $token, callable $emit)
+    function wp_ai_gateway_stream_openai_request(array $payload, string $token, callable $emit, string $path = '/chat/completions')
     {
         $body = wp_json_encode($payload);
         if (!is_string($body)) {
             return Chubes4\WpAiGateway\OpenAiResponse::error('invalid_request_error', 'Request body could not be encoded.', 400);
         }
 
-        $request = new WP_REST_Request('POST', '/wp-ai-gateway/v1/chat/completions');
+        $path = '/' . ltrim($path, '/');
+        $request = new WP_REST_Request('POST', '/wp-ai-gateway/v1' . $path);
         $request->set_header('Authorization', 'Bearer ' . $token);
         $request->set_header('Content-Type', 'application/json');
         $request->set_body($body);
 
-        return StreamingProxy::stream_chat_completions($request, $emit);
+        return StreamingProxy::stream_openai_request($request, $path, $emit);
     }
 }
 
