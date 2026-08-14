@@ -73,6 +73,10 @@ final class StreamingProxy
 
         $payload['model'] = $route['model'];
         $payload['stream'] = true;
+        $payload = apply_filters('wp_ai_gateway_stream_upstream_payload', $payload, $route, $principal);
+        if (!is_array($payload)) {
+            return OpenAiResponse::error('server_error', 'Streaming upstream payload is invalid.', 500);
+        }
         $body = wp_json_encode($payload);
         if (!is_string($body)) {
             return OpenAiResponse::error('server_error', 'Streaming request could not be encoded.', 500);

@@ -137,6 +137,7 @@ Streaming integrations configure the provider-neutral upstream boundary with the
 
 - `wp_ai_gateway_stream_upstream_url` returns the credential-free HTTPS chat-completions URL.
 - `wp_ai_gateway_stream_upstream_headers` adds or replaces site-owned upstream authentication headers.
+- `wp_ai_gateway_stream_upstream_payload` adapts the authenticated request to the configured upstream model contract.
 - `wp_ai_gateway_stream_transport` optionally replaces cURL while preserving the same start/chunk/end callback contract.
 
 For API-key providers, the default streaming headers use the same `wp_ai_gateway_provider_api_key` resolution as WordPress AI Client dispatch. The external gateway bearer token is validated locally and is never forwarded upstream.

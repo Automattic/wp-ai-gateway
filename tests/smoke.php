@@ -365,6 +365,11 @@ namespace {
         assert_true('example-provider' === $route['provider'], 'Streaming should use the configured provider route.');
         return 'https://provider.example/v1/chat/completions';
     };
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_payload'][] = static function (array $payload): array {
+        $payload['max_completion_tokens'] = $payload['max_tokens'] ?? null;
+        unset($payload['max_tokens']);
+        return $payload;
+    };
     $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'][] = static function ($transport) use ($upstream_chunks): callable {
         unset($transport);
         return static function (string $url, array $headers, string $body, callable $emit) use ($upstream_chunks): array {
@@ -373,6 +378,7 @@ namespace {
             assert_true('Bearer site-owned-secret' === $headers['Authorization'], 'Streaming should replace client auth with site-owned provider auth.');
             assert_true('example-model' === $payload['model'], 'Streaming should rewrite site-default to the configured upstream model.');
             assert_true(true === $payload['stream'], 'Streaming should force the upstream stream flag.');
+            assert_true(128 === $payload['max_completion_tokens'] && !isset($payload['max_tokens']), 'Streaming should apply site-owned upstream payload adaptation.');
             $response = ['status' => 200, 'headers' => ['content-type' => 'text/event-stream']];
             $emit('start', $response);
             foreach ($upstream_chunks as $chunk) {
@@ -383,7 +389,7 @@ namespace {
         };
     };
     $stream_result = wp_ai_gateway_stream_openai_request(
-        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        ['model' => 'site-default', 'stream' => true, 'max_tokens' => 128, 'messages' => [['role' => 'user', 'content' => 'hello']]],
         $mediated['token'],
         static function (string $event, $data) use (&$stream_events): void {
             $stream_events[] = [$event, $data];
