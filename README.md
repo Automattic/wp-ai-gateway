@@ -31,6 +31,7 @@ Configured provider and model
 - Routes `site-default` to the provider/model configured on the WordPress site.
 - Resolves provider API keys from Connectors-style options, constants, environment variables, or the `wp_ai_gateway_provider_api_key` filter.
 - Preserves provider-supplied authentication when a provider owns its own request-auth flow.
+- Carries raw upstream SSE chunks through a site-mediated streaming API without buffering or reconstructing events.
 
 ## Architecture
 
@@ -45,6 +46,7 @@ Plugin bootstrap
   |-- TokenAuthenticator   Scoped client minting, policy, and validation
   |-- ProviderRouter       site-default and provider:model-id routing
   |-- AiClientBridge       WordPress AI Client registry/model dispatch
+  |-- StreamingProxy       Raw upstream SSE transport for mediated runtimes
   |-- OpenAiResponse       OpenAI-compatible payload/error helpers
   |-- SettingsPage         wp-admin provider/model settings
   `-- CliCommand           wp ai-gateway configure/token/status
@@ -58,6 +60,7 @@ Core files:
 - `inc/class-token-authenticator.php` owns external client bearer-token behavior.
 - `inc/class-provider-router.php` resolves `site-default` and `provider:model-id` model names.
 - `inc/class-ai-client-bridge.php` adapts normalized requests to WordPress AI Client.
+- `inc/class-streaming-proxy.php` authenticates mediated streams and carries upstream response bytes downstream.
 - `inc/class-openai-response.php` keeps response and error shapes OpenAI-compatible.
 - `inc/class-settings-page.php` owns the minimal wp-admin settings page.
 - `inc/class-cli-command.php` owns automation-friendly WP-CLI setup/status commands.
@@ -127,6 +130,16 @@ wp ai-gateway revoke <client-id>
 ```
 
 When a scoped credential authenticates, the gateway establishes its bound WordPress user and fires `wp_ai_gateway_client_authenticated` with a non-secret principal. Provider integrations can use that hook to bind user-owned provider authentication for the request.
+
+Site-owned control planes can use `wp_ai_gateway_stream_openai_request()` when the workload cannot reach the WordPress REST API directly. The callback receives a `start` event with upstream status and safe response headers, each exact upstream body `chunk`, and an `end` event. An upstream failure after streaming starts is reported in the terminal event and as the function result. Control planes may frame those events for transport, but should write each chunk to the OpenAI-compatible client unchanged.
+
+Streaming integrations configure the provider-neutral upstream boundary with these filters:
+
+- `wp_ai_gateway_stream_upstream_url` returns the credential-free HTTPS chat-completions URL.
+- `wp_ai_gateway_stream_upstream_headers` adds or replaces site-owned upstream authentication headers.
+- `wp_ai_gateway_stream_transport` optionally replaces cURL while preserving the same start/chunk/end callback contract.
+
+For API-key providers, the default streaming headers use the same `wp_ai_gateway_provider_api_key` resolution as WordPress AI Client dispatch. The external gateway bearer token is validated locally and is never forwarded upstream.
 
 Check setup status without exposing secret values:
 
@@ -213,13 +226,14 @@ In scope now:
 - OpenAI-compatible embedding request routing surface
 - Provider-neutral model capability and retrieval metadata
 - WordPress AI Client provider dispatch
+- Site-mediated raw SSE streaming
 
 Future work:
 
 - Full embedding execution once WordPress AI Client exposes provider-neutral embedding results
 - Usage metering beyond provider-returned usage metadata
 - Budgets and quotas
-- Streaming
+- Direct REST SSE response serving
 - Admin UI for token rotation
 - Rich multimodal message support
 

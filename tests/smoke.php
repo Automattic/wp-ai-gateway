@@ -10,6 +10,7 @@ namespace {
     $GLOBALS['wp_ai_gateway_current_user_id'] = 0;
     $GLOBALS['wp_ai_gateway_authenticated_principals'] = [];
     $GLOBALS['wp_ai_gateway_password_counter'] = 0;
+    $GLOBALS['wp_ai_gateway_filters'] = [];
 
     class WP_Error
     {
@@ -66,11 +67,27 @@ namespace {
     {
         private array $headers;
         private $json;
+        private string $body = '';
 
-        public function __construct(array $headers = [], $json = null)
+        public function __construct($headers = [], $json = null)
         {
+            if (is_string($headers)) {
+                $headers = [];
+                $json = null;
+            }
             $this->headers = array_change_key_case($headers, CASE_LOWER);
             $this->json = $json;
+        }
+
+        public function set_header(string $name, string $value): void
+        {
+            $this->headers[strtolower($name)] = $value;
+        }
+
+        public function set_body(string $body): void
+        {
+            $this->body = $body;
+            $this->json = json_decode($body, true);
         }
 
         public function get_header(string $name)
@@ -103,7 +120,12 @@ namespace {
     function get_userdata(int $user_id) { return in_array($user_id, [7, 8], true) ? (object) ['ID' => $user_id] : false; }
     function sanitize_key(string $key): string { return preg_replace('/[^a-z0-9_\-]/', '', strtolower($key)) ?? ''; }
     function sanitize_text_field(string $text): string { return trim(strip_tags($text)); }
-    function apply_filters(string $hook, $value) { unset($hook); return $value; }
+    function apply_filters(string $hook, $value, ...$args) {
+        foreach ($GLOBALS['wp_ai_gateway_filters'][$hook] ?? [] as $callback) {
+            $value = $callback($value, ...$args);
+        }
+        return $value;
+    }
     function rest_url(string $path): string { return 'https://example.test/wp-json/' . ltrim($path, '/'); }
     function wp_json_encode($value): string { return json_encode($value, JSON_UNESCAPED_SLASHES); }
     function wp_generate_uuid4(): string { return '00000000-0000-4000-8000-000000000000'; }
@@ -322,6 +344,126 @@ namespace {
     ));
     assert_true(200 === $runtime_two_allowed->get_status(), 'Explicitly allowlisted provider-qualified route should succeed.');
 
+    $mediated = wp_ai_gateway_issue_runtime_credential(7, 300, 'Mediated runtime');
+    $mediated_response = wp_ai_gateway_dispatch_openai_request(
+        'POST',
+        '/chat/completions',
+        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token']
+    );
+    assert_true(200 === $mediated_response->get_status(), 'Site-owned control planes should dispatch through the gateway in-process.');
+    assert_true(7 === $GLOBALS['wp_ai_gateway_current_user_id'], 'Mediated dispatch should establish the credential-bound user.');
+
+    $stream_events = [];
+    $upstream_chunks = ["data: {\"id\":", "\"chatcmpl-one\"}\n\n", "data: [DONE]\n\n"];
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_provider_api_key'][] = static function ($key, string $provider): string {
+        unset($key);
+        return 'example-provider' === $provider ? 'site-owned-secret' : '';
+    };
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_url'][] = static function ($url, array $route): string {
+        unset($url);
+        assert_true('example-provider' === $route['provider'], 'Streaming should use the configured provider route.');
+        return 'https://provider.example/v1/chat/completions';
+    };
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'][] = static function ($transport) use ($upstream_chunks): callable {
+        unset($transport);
+        return static function (string $url, array $headers, string $body, callable $emit) use ($upstream_chunks): array {
+            $payload = json_decode($body, true);
+            assert_true('https://provider.example/v1/chat/completions' === $url, 'Streaming should target the site-configured HTTPS URL.');
+            assert_true('Bearer site-owned-secret' === $headers['Authorization'], 'Streaming should replace client auth with site-owned provider auth.');
+            assert_true('example-model' === $payload['model'], 'Streaming should rewrite site-default to the configured upstream model.');
+            assert_true(true === $payload['stream'], 'Streaming should force the upstream stream flag.');
+            $response = ['status' => 200, 'headers' => ['content-type' => 'text/event-stream']];
+            $emit('start', $response);
+            foreach ($upstream_chunks as $chunk) {
+                $emit('chunk', $chunk);
+            }
+            $emit('end', null);
+            return $response;
+        };
+    };
+    $stream_result = wp_ai_gateway_stream_openai_request(
+        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token'],
+        static function (string $event, $data) use (&$stream_events): void {
+            $stream_events[] = [$event, $data];
+        }
+    );
+    assert_true(200 === $stream_result['status'], 'Mediated streaming should return upstream status metadata.');
+    assert_true(['start', 'chunk', 'chunk', 'chunk', 'end'] === array_column($stream_events, 0), 'Streaming should preserve event order and upstream chunk boundaries.');
+    assert_true($upstream_chunks === array_column(array_slice($stream_events, 1, 3), 1), 'Streaming should carry exact upstream bytes without parsing or reconstruction.');
+    assert_true(7 === $GLOBALS['wp_ai_gateway_current_user_id'], 'Streaming should establish the credential-bound user.');
+
+    $disallowed_stream = wp_ai_gateway_stream_openai_request(
+        ['model' => 'example-provider:example-model', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token'],
+        static function (): void {}
+    );
+    assert_true($disallowed_stream instanceof WP_REST_Response && 403 === $disallowed_stream->get_status(), 'Streaming should enforce the credential model policy before contacting upstream.');
+
+    $GLOBALS['wp_ai_gateway_current_user_can'] = true;
+    $admin_context_disallowed = wp_ai_gateway_stream_openai_request(
+        ['model' => 'example-provider:example-model', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token'],
+        static function (): void {}
+    );
+    assert_true($admin_context_disallowed instanceof WP_REST_Response && 403 === $admin_context_disallowed->get_status(), 'A supplied scoped bearer token should remain authoritative in an administrator context.');
+    $GLOBALS['wp_ai_gateway_current_user_can'] = false;
+
+    $non_streaming_dispatch = wp_ai_gateway_stream_openai_request(
+        ['model' => 'site-default', 'stream' => false, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token'],
+        static function (): void {}
+    );
+    assert_true($non_streaming_dispatch instanceof WP_REST_Response && 400 === $non_streaming_dispatch->get_status(), 'Streaming dispatch should reject stream=false before contacting upstream.');
+
+    $partial_failure_events = [];
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'] = [static function (): callable {
+        return static function ($url, $headers, $body, callable $emit): WP_Error {
+            unset($url, $headers, $body);
+            $emit('start', ['status' => 200, 'headers' => ['content-type' => 'text/event-stream']]);
+            $emit('chunk', "data: partial\n\n");
+            return new WP_Error('upstream_reset', 'Upstream reset the stream.');
+        };
+    }];
+    $partial_failure = wp_ai_gateway_stream_openai_request(
+        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token'],
+        static function (string $event, $data) use (&$partial_failure_events): void {
+            $partial_failure_events[] = [$event, $data];
+        }
+    );
+    assert_true($partial_failure instanceof WP_Error, 'A partial upstream failure should remain observable to the control plane.');
+    assert_true(['start', 'chunk', 'end'] === array_column($partial_failure_events, 0), 'A partial upstream failure should emit one terminal end event.');
+    assert_true('upstream_reset' === $partial_failure_events[2][1]['error']['code'], 'The terminal event should identify the upstream failure.');
+
+    $early_failure_events = [];
+    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'] = [static function (): callable {
+        return static function (): WP_Error {
+            return new WP_Error('upstream_unreachable', 'Could not connect to upstream.');
+        };
+    }];
+    $early_failure = wp_ai_gateway_stream_openai_request(
+        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token'],
+        static function (string $event, $data) use (&$early_failure_events): void {
+            $early_failure_events[] = [$event, $data];
+        }
+    );
+    assert_true($early_failure instanceof WP_Error, 'An early upstream connection failure should remain observable to the control plane.');
+    assert_true(['end'] === array_column($early_failure_events, 0), 'An early upstream failure should emit one terminal end event.');
+    assert_true('upstream_unreachable' === $early_failure_events[0][1]['error']['code'], 'An early terminal event should identify the upstream failure.');
+
+    assert_true(wp_ai_gateway_revoke_runtime_credential($mediated['client']['id']), 'Mediated runtime credential should be revocable.');
+    $mediated_revoked = wp_ai_gateway_dispatch_openai_request('GET', '/models', null, $mediated['token']);
+    assert_true(403 === $mediated_revoked->get_status(), 'Revoked mediated credential should fail authentication.');
+    $revoked_stream = wp_ai_gateway_stream_openai_request(
+        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
+        $mediated['token'],
+        static function (): void {}
+    );
+    assert_true($revoked_stream instanceof WP_REST_Response && 403 === $revoked_stream->get_status(), 'Revoked mediated credential should fail before opening an upstream stream.');
+
     assert_true(Chubes4\WpAiGateway\TokenAuthenticator::revoke_client($runtime_one['client']['id']), 'One client should be revocable.');
     $runtime_one_revoked = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer ' . $runtime_one['token']]));
     $runtime_two_after_revoke = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
@@ -375,7 +517,7 @@ namespace {
     $status = Chubes4\WpAiGateway\CliCommand::gateway_status();
     assert_true(true === $status['configured'], 'Status should report configured route.');
     assert_true(true === $status['token_hash_exists'], 'Status should report token hash exists.');
-    assert_true(3 === $status['client_count'], 'Status should report client count without secrets.');
+    assert_true(4 === $status['client_count'], 'Status should report client count without secrets.');
     assert_true(!array_key_exists('token', $status), 'Status must not expose token values.');
     assert_true(false === strpos(serialize(Chubes4\WpAiGateway\TokenAuthenticator::public_clients()), 'token_hash'), 'Client listing must not expose token hashes.');
 

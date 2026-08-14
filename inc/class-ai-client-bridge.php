@@ -167,7 +167,7 @@ final class AiClientBridge
     private static function bind_provider_api_key(object $registry, string $provider): void
     {
         $class = '\WordPress\AiClient\Providers\Http\DTO\ApiKeyRequestAuthentication';
-        $key = self::resolve_provider_api_key($provider);
+        $key = self::provider_api_key($provider);
 
         if ('' === $key || !class_exists($class) || !method_exists($registry, 'setProviderRequestAuthentication')) {
             return;
@@ -186,7 +186,7 @@ final class AiClientBridge
      * @param string $provider Provider ID.
      * @return string
      */
-    private static function resolve_provider_api_key(string $provider): string
+    public static function provider_api_key(string $provider): string
     {
         $provider = sanitize_key($provider);
         $filtered = apply_filters('wp_ai_gateway_provider_api_key', '', $provider);
