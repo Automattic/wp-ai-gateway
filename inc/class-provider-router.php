@@ -95,6 +95,25 @@ final class ProviderRouter
     }
 
     /**
+     * Normalizes an external model ID for policy checks.
+     *
+     * Unqualified names route to site-default and therefore share its policy.
+     *
+     * @param string $requested_model Requested model.
+     * @return string
+     */
+    public static function policy_model_id(string $requested_model): string
+    {
+        $requested_model = trim($requested_model);
+        if ('' === $requested_model || false === strpos($requested_model, ':')) {
+            return MODEL_SITE_DEFAULT;
+        }
+
+        $delimiter = strpos($requested_model, ':');
+        return sanitize_key(substr($requested_model, 0, $delimiter)) . ':' . sanitize_text_field(substr($requested_model, $delimiter + 1));
+    }
+
+    /**
      * Builds a provider-qualified model alias for external clients.
      *
      * @param string $provider Provider ID.
