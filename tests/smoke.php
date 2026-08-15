@@ -45,6 +45,7 @@ namespace {
     {
         private $data;
         private int $status;
+        private array $headers = [];
 
         public function __construct($data = null, int $status = 200)
         {
@@ -61,6 +62,8 @@ namespace {
         {
             return $this->status;
         }
+        public function header(string $key, string $value): void { $this->headers[$key] = $value; }
+        public function get_headers(): array { return $this->headers; }
     }
 
     class WP_REST_Request
@@ -102,6 +105,7 @@ namespace {
     }
 
     function add_action(): void {}
+    function add_filter(): void {}
     function do_action(string $hook, ...$args): void {
         if ('wp_ai_gateway_client_authenticated' === $hook) {
             $GLOBALS['wp_ai_gateway_authenticated_principals'][] = $args[0];
@@ -160,6 +164,21 @@ namespace {
             return 'ok from fake provider';
         }
 
+        public function using_function_declarations(...$declarations): self
+        {
+            $GLOBALS['wp_ai_gateway_declarations'] = $declarations;
+            return $this;
+        }
+
+        public function generate_text_result(): \WpAiGatewaySmoke\FakeResult
+        {
+            if (!$this->model || [] === $this->messages) {
+                throw new RuntimeException('Prompt was not configured.');
+            }
+            $GLOBALS['wp_ai_gateway_messages'] = $this->messages;
+            return $GLOBALS['wp_ai_gateway_fake_result'];
+        }
+
         public function generateEmbeddingResult(): FakeEmbeddingResult
         {
             if (!$this->model || [] === $this->messages) {
@@ -207,12 +226,15 @@ namespace WordPress\AiClient {
 namespace WordPress\AiClient\Messages\DTO {
     class Message
     {
-        public function __construct($role, array $parts) { unset($role, $parts); }
+        public $role;
+        public array $parts;
+        public function __construct($role, array $parts) { $this->role = $role; $this->parts = $parts; }
     }
 
     class MessagePart
     {
-        public function __construct(string $content) { unset($content); }
+        public $content;
+        public function __construct($content) { $this->content = $content; }
     }
 }
 
@@ -238,7 +260,63 @@ namespace WordPress\AiClient\Providers\Http\DTO {
     }
 }
 
+namespace WordPress\AiClient\Tools\DTO {
+    class FunctionDeclaration
+    {
+        public string $name;
+        public string $description;
+        public $parameters;
+        public function __construct(string $name, string $description, $parameters = null) { $this->name = $name; $this->description = $description; $this->parameters = $parameters; }
+    }
+    class FunctionCall
+    {
+        private ?string $id;
+        private ?string $name;
+        private $args;
+        public function __construct(?string $id, ?string $name, $args) { $this->id = $id; $this->name = $name; $this->args = $args; }
+        public function getId(): ?string { return $this->id; }
+        public function getName(): ?string { return $this->name; }
+        public function getArgs() { return $this->args; }
+    }
+    class FunctionResponse
+    {
+        public ?string $id;
+        public ?string $name;
+        public $response;
+        public function __construct(?string $id, ?string $name, $response) { $this->id = $id; $this->name = $name; $this->response = $response; }
+    }
+}
+
 namespace WpAiGatewaySmoke {
+    class FakePart
+    {
+        private ?string $text;
+        private $call;
+        public function __construct(?string $text = null, $call = null) { $this->text = $text; $this->call = $call; }
+        public function getText(): ?string { return $this->text; }
+        public function getFunctionCall() { return $this->call; }
+    }
+    class FakeMessage
+    {
+        private array $parts;
+        public function __construct(array $parts) { $this->parts = $parts; }
+        public function getParts(): array { return $this->parts; }
+    }
+    class FakeFinishReason { public string $value; public function __construct(string $value) { $this->value = $value; } }
+    class FakeCandidate
+    {
+        private FakeMessage $message;
+        private FakeFinishReason $reason;
+        public function __construct(array $parts, string $reason = 'stop') { $this->message = new FakeMessage($parts); $this->reason = new FakeFinishReason($reason); }
+        public function getMessage(): FakeMessage { return $this->message; }
+        public function getFinishReason(): FakeFinishReason { return $this->reason; }
+    }
+    class FakeResult
+    {
+        private array $candidates;
+        public function __construct(FakeCandidate $candidate) { $this->candidates = [$candidate]; }
+        public function getCandidates(): array { return $this->candidates; }
+    }
     class FakeModel {}
 
     class FakeModelMetadata
@@ -276,6 +354,7 @@ namespace {
 
     $registry = new WpAiGatewaySmoke\FakeRegistry();
     WordPress\AiClient\AiClient::$registry = $registry;
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('ok from fake provider')]));
 
     $missing = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request());
     assert_true($missing instanceof WP_REST_Response, 'Missing token should return REST response.');
@@ -308,6 +387,7 @@ namespace {
         ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]]
     ));
     assert_true(200 === $chat->get_status(), 'site-default path without API key should return 200 with fake provider.');
+    assert_true('ok from fake provider' === $chat->get_data()['choices'][0]['message']['content'], 'Text chat must preserve existing response behavior.');
     assert_true(false === $registry->apiKeyAuthenticationBound, 'Provider-supplied auth path should not inject API-key auth.');
 
     $provider_qualified_chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
@@ -315,6 +395,62 @@ namespace {
         ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
     ));
     assert_true(200 === $provider_qualified_chat->get_status(), 'Provider-qualified model path should return 200 with fake provider.');
+
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([
+        new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_weather', 'weather', ['city' => 'Paris'])),
+    ], 'tool_calls'));
+    $tool_chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
+        ['Authorization' => 'Bearer valid-token'],
+        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'Weather?']], 'tools' => [['type' => 'function', 'function' => ['name' => 'weather', 'description' => 'Gets weather', 'parameters' => ['type' => 'object']]]]]
+    ));
+    assert_true('weather' === $GLOBALS['wp_ai_gateway_declarations'][0]->name, 'Function definitions must become FunctionDeclaration DTOs.');
+    assert_true('tool_calls' === $tool_chat->get_data()['choices'][0]['finish_reason'], 'Function calls must finish with tool_calls.');
+    assert_true('call_weather' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function call IDs must be preserved.');
+    assert_true('{"city":"Paris"}' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['function']['arguments'], 'Function arguments must be JSON encoded.');
+
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([
+        new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_one', 'one', [])),
+        new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_two', 'two', ['x' => 2])),
+    ], 'tool_calls'));
+    $parallel = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'call both']]]));
+    assert_true(2 === count($parallel->get_data()['choices'][0]['message']['tool_calls']), 'Parallel function calls must be retained.');
+
+    $bad_tool = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'bad']], 'tools' => [['type' => 'code']]]));
+    assert_true(400 === $bad_tool->get_status(), 'Unsupported tool payloads must return 400.');
+
+    $bad_parameters = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'bad']], 'tools' => [['type' => 'function', 'function' => ['name' => 'bad', 'parameters' => ['not-a-schema']]]]]));
+    assert_true(400 === $bad_parameters->get_status(), 'Function parameter schemas must be JSON objects.');
+
+    $required_choice = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'required']], 'tools' => [['type' => 'function', 'function' => ['name' => 'weather']]], 'tool_choice' => 'required']));
+    assert_true(400 === $required_choice->get_status(), 'Unsupported required tool choice must return 400.');
+
+    $disabled_parallel = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'one call']], 'parallel_tool_calls' => false]));
+    assert_true(400 === $disabled_parallel->get_status(), 'Unsupported parallel tool control must return 400.');
+
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('It is sunny.')]));
+    $followup = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [
+        ['role' => 'assistant', 'content' => null, 'tool_calls' => [['id' => 'call_weather', 'type' => 'function', 'function' => ['name' => 'weather', 'arguments' => '{"city":"Paris"}']]]],
+        ['role' => 'tool', 'tool_call_id' => 'call_weather', 'content' => '{"temperature":20}'],
+    ]]));
+    $function_response = $GLOBALS['wp_ai_gateway_messages'][1]->parts[0]->content;
+    assert_true('weather' === $function_response->name && 20 === $function_response->response['temperature'], 'Tool result history must become decoded FunctionResponse parts.');
+    assert_true('It is sunny.' === $followup->get_data()['choices'][0]['message']['content'], 'Tool-result follow-up must preserve final text.');
+
+    $text_stream = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'stream']], 'stream' => true]));
+    ob_start();
+    $served = Chubes4\WpAiGateway\RestController::serve_stream(false, $text_stream, new WP_REST_Request(), new class { public function send_header(string $name, string $value): void {} });
+    $sse = ob_get_clean();
+    assert_true($served && false !== strpos($sse, '"content":"It is sunny."') && false !== strpos($sse, '"finish_reason":"stop"') && false !== strpos($sse, 'data: [DONE]'), 'Text streaming must emit chunks, finish reason, and DONE.');
+
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_sse', 'weather', []))], 'tool_calls'));
+    $tool_stream = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'stream tool']], 'stream' => true]));
+    ob_start(); Chubes4\WpAiGateway\RestController::serve_stream(false, $tool_stream, new WP_REST_Request(), new class { public function send_header(string $name, string $value): void {} }); $tool_sse = ob_get_clean();
+    assert_true(false !== strpos($tool_sse, '"tool_calls"') && false !== strpos($tool_sse, '"index":0') && false !== strpos($tool_sse, '"finish_reason":"tool_calls"') && false !== strpos($tool_sse, 'data: [DONE]'), 'Tool streaming must emit indexed tool chunks, tool_calls, and DONE.');
+
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_invalid', null, []))], 'tool_calls'));
+    $invalid_provider_call = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'invalid provider call']]]));
+    assert_true(500 === $invalid_provider_call->get_status(), 'Malformed provider function calls must return a gateway error.');
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('ok from fake provider')]));
 
     $runtime_one = Chubes4\WpAiGateway\TokenAuthenticator::generate_client_token('Runtime one', 3600, ['site-default'], 7);
     $runtime_two = Chubes4\WpAiGateway\TokenAuthenticator::generate_client_token('Runtime two', 3600, ['example-provider:example-model'], 8);

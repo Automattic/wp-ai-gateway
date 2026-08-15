@@ -32,6 +32,8 @@ Configured provider and model
 - Resolves provider API keys from Connectors-style options, constants, environment variables, or the `wp_ai_gateway_provider_api_key` filter.
 - Preserves provider-supplied authentication when a provider owns its own request-auth flow.
 - Carries raw upstream SSE chunks through a site-mediated streaming API without buffering or reconstructing events.
+- Supports OpenAI `function` tools, including parallel calls and tool-result conversation history.
+- Serves OpenAI-compatible `text/event-stream` chat completion chunks when `stream: true`.
 
 ## Architecture
 
@@ -198,7 +200,7 @@ php -l tests/smoke.php
 php tests/smoke.php
 ```
 
-The smoke covers missing bearer token, invalid bearer token, unconfigured provider/model, `/models` shape with embedding metadata, `site-default` routing, provider-qualified model routing, embedding response usage/request metadata, machine-readable status, and provider-supplied auth without gateway API-key injection.
+The smoke covers authentication and routing, text chat, tool declaration validation, single and parallel tool calls, tool-result history, structured finish reasons, text and tool SSE chunks with `[DONE]`, embeddings, and provider-supplied auth without gateway API-key injection.
 
 ## OpenAI-Compatible Example
 
@@ -224,6 +226,8 @@ In scope now:
 - Multiple scoped client credentials with expiry, revocation, rotation, user binding, and model allowlists
 - `site-default` model routing
 - OpenAI-compatible text chat responses
+- OpenAI-compatible function tools and structured tool history
+- Deterministic Server-Sent Event chat streams
 - OpenAI-compatible embedding request routing surface
 - Provider-neutral model capability and retrieval metadata
 - WordPress AI Client provider dispatch
@@ -234,7 +238,10 @@ Future work:
 - Full embedding execution once WordPress AI Client exposes provider-neutral embedding results
 - Usage metering beyond provider-returned usage metadata
 - Budgets and quotas
+<<<<<<< HEAD
 - Direct REST SSE response serving
+=======
+>>>>>>> d391c45 (feat: bridge streaming tool calls)
 - Admin UI for token rotation
 - Rich multimodal message support
 

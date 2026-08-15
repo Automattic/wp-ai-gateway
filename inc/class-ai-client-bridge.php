@@ -41,13 +41,13 @@ final class AiClientBridge
     }
 
     /**
-     * Generates text through WordPress AI Client for a resolved provider route.
+     * Generates a structured text result through WordPress AI Client.
      *
      * @param array{provider:string,model:string} $route Resolved provider route.
      * @param array<string, mixed>                $payload OpenAI-compatible request payload.
-     * @return string|WP_REST_Response
+     * @return array<string, mixed>|WP_REST_Response
      */
-    public static function generate_text(array $route, array $payload)
+    public static function generate_text_result(array $route, array $payload)
     {
         $registry = self::registry();
         if (!$registry || !method_exists($registry, 'getProviderModel')) {
@@ -57,19 +57,32 @@ final class AiClientBridge
         self::bind_provider_api_key($registry, $route['provider']);
 
         try {
+            $declarations = self::normalize_tools($payload['tools'] ?? []);
+            if ('none' === self::normalize_tool_choice($payload['tool_choice'] ?? null)) {
+                $declarations = [];
+            }
+            self::validate_parallel_tool_calls($payload);
             $model = $registry->getProviderModel($route['provider'], $route['model'], self::model_config_from_payload($payload));
-            $text = wp_ai_client_prompt(self::normalize_messages($payload['messages']))
-                ->using_model($model)
-                ->generate_text();
+            $prompt = wp_ai_client_prompt(self::normalize_messages($payload['messages']))->using_model($model);
+            if ([] !== $declarations) {
+                $prompt = $prompt->using_function_declarations(...$declarations);
+            }
+            $result = $prompt->generate_text_result();
+        } catch (\InvalidArgumentException $e) {
+            return OpenAiResponse::error('invalid_request_error', $e->getMessage(), 400);
         } catch (\Throwable $e) {
             return OpenAiResponse::error('server_error', $e->getMessage(), 500);
         }
 
-        if ($text instanceof WP_Error) {
-            return OpenAiResponse::from_wp_error($text);
+        if ($result instanceof WP_Error) {
+            return OpenAiResponse::from_wp_error($result);
         }
 
-        return is_string($text) ? $text : (string) $text;
+        try {
+            return self::completion_from_result($result);
+        } catch (\InvalidArgumentException $e) {
+            return OpenAiResponse::error('server_error', $e->getMessage(), 500);
+        }
     }
 
     /**
@@ -235,6 +248,75 @@ final class AiClientBridge
     }
 
     /**
+     * Converts OpenAI function declarations to AI Client DTOs.
+     *
+     * @param mixed $tools OpenAI tools payload.
+     * @return list<object>
+     */
+    private static function normalize_tools($tools): array
+    {
+        if (!is_array($tools)) {
+            throw new \InvalidArgumentException('tools must be an array.');
+        }
+
+        $declarations = [];
+        foreach ($tools as $tool) {
+            if (!is_array($tool) || 'function' !== ($tool['type'] ?? null) || !isset($tool['function']) || !is_array($tool['function'])) {
+                throw new \InvalidArgumentException('Each tool must have type "function" and a function object.');
+            }
+            $function = $tool['function'];
+            if (!is_string($function['name'] ?? null) || '' === $function['name']) {
+                throw new \InvalidArgumentException('Function tools require a non-empty name.');
+            }
+            if (isset($function['description']) && !is_string($function['description'])) {
+                throw new \InvalidArgumentException('Function tool descriptions must be strings.');
+            }
+            if (isset($function['parameters'])) {
+                if (!is_array($function['parameters']) || ([] !== $function['parameters'] && array_keys($function['parameters']) === range(0, count($function['parameters']) - 1))) {
+                    throw new \InvalidArgumentException('Function tool parameters must be a JSON object.');
+                }
+            }
+            $declarations[] = new \WordPress\AiClient\Tools\DTO\FunctionDeclaration(
+                $function['name'],
+                $function['description'] ?? '',
+                $function['parameters'] ?? null
+            );
+        }
+
+        return $declarations;
+    }
+
+    /**
+     * Validates the OpenAI tool choice values supported by WordPress AI Client.
+     *
+     * @param mixed $tool_choice OpenAI tool choice.
+     * @return string
+     */
+    private static function normalize_tool_choice($tool_choice): string
+    {
+        if (null === $tool_choice || 'auto' === $tool_choice) {
+            return 'auto';
+        }
+        if ('none' === $tool_choice) {
+            return 'none';
+        }
+        throw new \InvalidArgumentException('tool_choice supports only "auto" and "none".');
+    }
+
+    /**
+     * Rejects parallel-call controls that WordPress AI Client cannot enforce.
+     *
+     * @param array<string, mixed> $payload Request payload.
+     * @return void
+     */
+    private static function validate_parallel_tool_calls(array $payload): void
+    {
+        if (array_key_exists('parallel_tool_calls', $payload) && true !== $payload['parallel_tool_calls']) {
+            throw new \InvalidArgumentException('parallel_tool_calls supports only true.');
+        }
+    }
+
+    /**
      * Normalizes OpenAI messages for wp_ai_client_prompt().
      *
      * @param list<mixed> $messages OpenAI messages.
@@ -243,15 +325,49 @@ final class AiClientBridge
     private static function normalize_messages(array $messages): array
     {
         $normalized = [];
+        $call_names = [];
 
         foreach ($messages as $message) {
             if (!is_array($message)) {
+                throw new \InvalidArgumentException('Each message must be an object.');
+            }
+
+            $role = $message['role'] ?? null;
+            if (!is_string($role) || !in_array($role, ['system', 'user', 'assistant', 'model', 'tool'], true)) {
+                throw new \InvalidArgumentException('Each message requires a supported role.');
+            }
+            if ('tool' === $role) {
+                $id = $message['tool_call_id'] ?? null;
+                if (!is_string($id) || '' === $id) {
+                    throw new \InvalidArgumentException('Tool messages require tool_call_id.');
+                }
+                $name = is_string($message['name'] ?? null) ? $message['name'] : ($call_names[$id] ?? null);
+                if (!is_string($name) || '' === $name) {
+                    throw new \InvalidArgumentException('Tool messages must correspond to a preceding assistant tool call.');
+                }
+                $normalized[] = new \WordPress\AiClient\Messages\DTO\Message(
+                    \WordPress\AiClient\Messages\Enums\MessageRoleEnum::user(),
+                    [new \WordPress\AiClient\Messages\DTO\MessagePart(
+                        new \WordPress\AiClient\Tools\DTO\FunctionResponse($id, $name, self::decode_tool_response($message['content'] ?? ''))
+                    )]
+                );
                 continue;
             }
 
-            $role = is_string($message['role'] ?? null) ? $message['role'] : 'user';
+            $parts = [];
             $content = self::message_content_to_text($message['content'] ?? '');
-            if ('' === $content) {
+            if ('' !== $content) {
+                $parts[] = new \WordPress\AiClient\Messages\DTO\MessagePart($content);
+            }
+            if ('assistant' === $role || 'model' === $role) {
+                foreach (self::normalize_tool_calls($message['tool_calls'] ?? []) as $call) {
+                    $call_names[$call->getId()] = $call->getName();
+                    $parts[] = new \WordPress\AiClient\Messages\DTO\MessagePart($call);
+                }
+            } elseif (isset($message['tool_calls'])) {
+                throw new \InvalidArgumentException('Only assistant messages may contain tool_calls.');
+            }
+            if ([] === $parts) {
                 continue;
             }
 
@@ -259,11 +375,118 @@ final class AiClientBridge
                 'assistant' === $role || 'model' === $role
                     ? \WordPress\AiClient\Messages\Enums\MessageRoleEnum::model()
                     : \WordPress\AiClient\Messages\Enums\MessageRoleEnum::user(),
-                [new \WordPress\AiClient\Messages\DTO\MessagePart($content)]
+                $parts
             );
         }
 
         return $normalized;
+    }
+
+    /**
+     * Converts OpenAI assistant tool calls to AI Client DTOs.
+     *
+     * @param mixed $tool_calls OpenAI tool calls payload.
+     * @return list<object>
+     */
+    private static function normalize_tool_calls($tool_calls): array
+    {
+        if (!is_array($tool_calls)) {
+            throw new \InvalidArgumentException('assistant tool_calls must be an array.');
+        }
+        $calls = [];
+        foreach ($tool_calls as $tool_call) {
+            if (!is_array($tool_call) || 'function' !== ($tool_call['type'] ?? null) || !is_string($tool_call['id'] ?? null) || '' === $tool_call['id'] || !is_array($tool_call['function'] ?? null)) {
+                throw new \InvalidArgumentException('Assistant tool calls require id, type "function", and a function object.');
+            }
+            $function = $tool_call['function'];
+            if (!is_string($function['name'] ?? null) || '' === $function['name'] || !is_string($function['arguments'] ?? null)) {
+                throw new \InvalidArgumentException('Assistant function calls require a name and JSON string arguments.');
+            }
+            $args = json_decode($function['arguments'], true);
+            if (JSON_ERROR_NONE !== json_last_error()) {
+                throw new \InvalidArgumentException('Assistant function arguments must be valid JSON.');
+            }
+            $calls[] = new \WordPress\AiClient\Tools\DTO\FunctionCall($tool_call['id'], $function['name'], $args);
+        }
+        return $calls;
+    }
+
+    /**
+     * Decodes JSON tool output while preserving non-JSON text.
+     *
+     * @param mixed $content Tool output.
+     * @return mixed
+     */
+    private static function decode_tool_response($content)
+    {
+        if (!is_string($content)) {
+            return $content;
+        }
+        $decoded = json_decode($content, true);
+        return JSON_ERROR_NONE === json_last_error() ? $decoded : $content;
+    }
+
+    /**
+     * Converts an AI Client result into an OpenAI completion choice.
+     *
+     * @param object $result AI Client generative result.
+     * @return array<string, mixed>
+     */
+    private static function completion_from_result($result): array
+    {
+        if (!is_object($result) || !method_exists($result, 'getCandidates')) {
+            throw new \InvalidArgumentException('Text generation did not return a structured result.');
+        }
+        $candidates = $result->getCandidates();
+        if (!is_array($candidates) || !isset($candidates[0]) || !method_exists($candidates[0], 'getMessage')) {
+            throw new \InvalidArgumentException('Text generation result did not include a candidate.');
+        }
+        $candidate = $candidates[0];
+        $message = $candidate->getMessage();
+        $content = [];
+        $tool_calls = [];
+        foreach ($message->getParts() as $part) {
+            if (method_exists($part, 'getText') && null !== $part->getText()) {
+                $content[] = $part->getText();
+            }
+            if (method_exists($part, 'getFunctionCall') && null !== $part->getFunctionCall()) {
+                $call = $part->getFunctionCall();
+                if (!is_string($call->getName()) || '' === $call->getName()) {
+                    throw new \InvalidArgumentException('Provider function calls require a non-empty name.');
+                }
+                $arguments = wp_json_encode($call->getArgs());
+                if (!is_string($arguments)) {
+                    throw new \InvalidArgumentException('Function call arguments could not be JSON encoded.');
+                }
+                $tool_calls[] = [
+                    'id' => $call->getId() ?: 'call_' . wp_generate_uuid4(),
+                    'type' => 'function',
+                    'function' => ['name' => $call->getName(), 'arguments' => $arguments],
+                ];
+            }
+        }
+        $finish_reason = [] !== $tool_calls ? 'tool_calls' : self::finish_reason($candidate);
+        $openai_message = ['role' => 'assistant', 'content' => [] === $content ? null : implode('', $content)];
+        if ([] !== $tool_calls) {
+            $openai_message['tool_calls'] = $tool_calls;
+        }
+        return ['index' => 0, 'message' => $openai_message, 'finish_reason' => $finish_reason];
+    }
+
+    /**
+     * Maps AI Client finish reasons to OpenAI finish reasons.
+     *
+     * @param object $candidate AI Client candidate.
+     * @return string
+     */
+    private static function finish_reason(object $candidate): string
+    {
+        if (!method_exists($candidate, 'getFinishReason')) {
+            return 'stop';
+        }
+        $reason = $candidate->getFinishReason();
+        $value = is_object($reason) && isset($reason->value) ? $reason->value : (string) $reason;
+        return in_array($value, ['stop', 'length', 'content_filter'], true) ? $value : 'stop';
     }
 
     /**
