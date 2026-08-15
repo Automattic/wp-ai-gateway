@@ -238,10 +238,6 @@ Future work:
 - Full embedding execution once WordPress AI Client exposes provider-neutral embedding results
 - Usage metering beyond provider-returned usage metadata
 - Budgets and quotas
-<<<<<<< HEAD
-- Direct REST SSE response serving
-=======
->>>>>>> d391c45 (feat: bridge streaming tool calls)
 - Admin UI for token rotation
 - Rich multimodal message support
 
