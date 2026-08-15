@@ -69,6 +69,24 @@ if (!function_exists('wp_ai_gateway_revoke_runtime_credential')) {
     }
 }
 
+if (!function_exists('wp_ai_gateway_stream_for_user')) {
+    /**
+     * Streams a site-owned mediated request for a WordPress user.
+     * The temporary credential is never returned to the caller.
+     *
+     * @param array<string,mixed> $payload
+     */
+    function wp_ai_gateway_stream_for_user(int $user_id, array $payload, callable $emit, string $path = '/chat/completions')
+    {
+        $credential = wp_ai_gateway_issue_runtime_credential($user_id, 300, 'Site-mediated runtime');
+        try {
+            return wp_ai_gateway_stream_openai_request($payload, $credential['token'], $emit, $path);
+        } finally {
+            wp_ai_gateway_revoke_runtime_credential((string) $credential['client']['id']);
+        }
+    }
+}
+
 if (!function_exists('wp_ai_gateway_dispatch_openai_request')) {
     /**
      * Dispatches an OpenAI-compatible request inside the current WordPress process.
