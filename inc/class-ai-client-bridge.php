@@ -460,7 +460,11 @@ final class AiClientBridge
                 if (!is_string($call->getName()) || '' === $call->getName()) {
                     throw new \InvalidArgumentException('Provider function calls require a non-empty name.');
                 }
-                $arguments = wp_json_encode($call->getArgs());
+                $args = $call->getArgs();
+                if (null === $args || (is_array($args) && [] === $args)) {
+                    $args = new \stdClass();
+                }
+                $arguments = wp_json_encode($args);
                 if (!is_string($arguments)) {
                     throw new \InvalidArgumentException('Function call arguments could not be JSON encoded.');
                 }

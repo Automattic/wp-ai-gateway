@@ -415,6 +415,10 @@ namespace {
     ));
     assert_true(['type' => 'object'] === $GLOBALS['wp_ai_gateway_declarations'][0]->parameters, 'Empty function properties must remain a JSON object schema upstream.');
 
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_no_args', 'no_args', null))], 'tool_calls'));
+    $no_args_call = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'No args']]]));
+    assert_true('{}' === $no_args_call->get_data()['choices'][0]['message']['tool_calls'][0]['function']['arguments'], 'Null function arguments must become an empty JSON object.');
+
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([
         new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_one', 'one', [])),
         new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_two', 'two', ['x' => 2])),
