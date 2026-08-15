@@ -22,6 +22,7 @@ final class Plugin
     public static function bootstrap(): void
     {
         add_action('rest_api_init', [RestController::class, 'register_routes']);
+        add_filter('rest_pre_serve_request', [RestController::class, 'serve_stream'], 10, 4);
         add_action('admin_menu', [SettingsPage::class, 'register_menu']);
         add_action('admin_init', [SettingsPage::class, 'register_settings']);
 

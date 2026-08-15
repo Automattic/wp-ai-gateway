@@ -18,6 +18,104 @@ use WP_REST_Response;
 final class OpenAiResponse
 {
     /**
+     * Creates an OpenAI-compatible chat completion response.
+     *
+     * @param string               $id Completion ID.
+     * @param string               $model Requested model ID.
+     * @param array<string, mixed> $choice Generated choice.
+     * @return WP_REST_Response
+     */
+    public static function chat_completion(string $id, string $model, array $choice): WP_REST_Response
+    {
+        return new WP_REST_Response([
+            'id' => $id,
+            'object' => 'chat.completion',
+            'created' => time(),
+            'model' => $model,
+            'choices' => [$choice],
+            'usage' => null,
+        ]);
+    }
+
+    /**
+     * Creates a REST response that will be served as Server-Sent Events.
+     *
+     * @param string               $id Completion ID.
+     * @param string               $model Requested model ID.
+     * @param array<string, mixed> $choice Generated choice.
+     * @return WP_REST_Response
+     */
+    public static function chat_completion_stream(string $id, string $model, array $choice): WP_REST_Response
+    {
+        $created = time();
+        $chunks = [[
+            'id' => $id,
+            'object' => 'chat.completion.chunk',
+            'created' => $created,
+            'model' => $model,
+            'choices' => [[
+                'index' => 0,
+                'delta' => ['role' => 'assistant'],
+                'finish_reason' => null,
+            ]],
+        ]];
+
+        $message = $choice['message'];
+        if (is_string($message['content'] ?? null) && '' !== $message['content']) {
+            $chunks[] = self::chat_completion_chunk($id, $model, $created, ['content' => $message['content']], null);
+        }
+        if (isset($message['tool_calls']) && is_array($message['tool_calls'])) {
+            $tool_calls = [];
+            foreach (array_values($message['tool_calls']) as $index => $tool_call) {
+                $tool_call['index'] = $index;
+                $tool_calls[] = $tool_call;
+            }
+            $chunks[] = self::chat_completion_chunk($id, $model, $created, ['tool_calls' => $tool_calls], null);
+        }
+        $chunks[] = [
+            'id' => $id,
+            'object' => 'chat.completion.chunk',
+            'created' => $created,
+            'model' => $model,
+            'choices' => [[
+                'index' => 0,
+                'delta' => new \stdClass(),
+                'finish_reason' => $choice['finish_reason'],
+            ]],
+        ];
+
+        $response = new WP_REST_Response(['chunks' => $chunks]);
+        $response->header('Content-Type', 'text/event-stream; charset=utf-8');
+        $response->header('Cache-Control', 'no-cache');
+        $response->header('X-WP-AI-Gateway-SSE', '1');
+        return $response;
+    }
+
+    /**
+     * Creates one OpenAI-compatible stream chunk.
+     *
+     * @param string               $id Completion ID.
+     * @param string               $model Requested model ID.
+     * @param int                  $created Creation timestamp.
+     * @param array<string, mixed> $delta Assistant delta.
+     * @param string|null          $finish_reason Finish reason.
+     * @return array<string, mixed>
+     */
+    private static function chat_completion_chunk(string $id, string $model, int $created, array $delta, ?string $finish_reason): array
+    {
+        return [
+            'id' => $id,
+            'object' => 'chat.completion.chunk',
+            'created' => $created,
+            'model' => $model,
+            'choices' => [[
+                'index' => 0,
+                'delta' => $delta,
+                'finish_reason' => $finish_reason,
+            ]],
+        ];
+    }
+    /**
      * Creates an OpenAI-compatible error response.
      *
      * @param string $type Error type.

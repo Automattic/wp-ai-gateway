@@ -151,30 +151,50 @@ final class RestController
             return $route;
         }
 
-        $text = AiClientBridge::generate_text($route, $payload);
-        if ($text instanceof WP_REST_Response) {
-            return $text;
+        $completion = AiClientBridge::generate_text_result($route, $payload);
+        if ($completion instanceof WP_REST_Response) {
+            return $completion;
         }
 
-        return new WP_REST_Response(
-            [
-                'id' => 'chatcmpl-' . wp_generate_uuid4(),
-                'object' => 'chat.completion',
-                'created' => time(),
-                'model' => $payload['model'] ?? MODEL_SITE_DEFAULT,
-                'choices' => [
-                    [
-                        'index' => 0,
-                        'message' => [
-                            'role' => 'assistant',
-                            'content' => $text,
-                        ],
-                        'finish_reason' => 'stop',
-                    ],
-                ],
-                'usage' => null,
-            ]
-        );
+        $id = 'chatcmpl-' . wp_generate_uuid4();
+        $model = is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT;
+        if (true === ($payload['stream'] ?? false)) {
+            return OpenAiResponse::chat_completion_stream($id, $model, $completion);
+        }
+
+        return OpenAiResponse::chat_completion($id, $model, $completion);
+    }
+
+    /**
+     * Sends gateway stream responses without REST JSON encoding.
+     *
+     * @param bool            $served Whether another handler served the request.
+     * @param WP_REST_Response $response REST response.
+     * @param WP_REST_Request $request REST request.
+     * @param object          $server REST server.
+     * @return bool
+     */
+    public static function serve_stream(bool $served, $response, WP_REST_Request $request, $server): bool
+    {
+        unset($request);
+        if ($served || !is_object($response) || !method_exists($response, 'get_headers') || '1' !== ($response->get_headers()['X-WP-AI-Gateway-SSE'] ?? '')) {
+            return $served;
+        }
+
+        $data = $response->get_data();
+        if (!is_array($data) || !isset($data['chunks']) || !is_array($data['chunks'])) {
+            return $served;
+        }
+
+        if (is_object($server) && method_exists($server, 'send_header')) {
+            $server->send_header('Content-Type', 'text/event-stream; charset=utf-8');
+            $server->send_header('Cache-Control', 'no-cache');
+        }
+        foreach ($data['chunks'] as $chunk) {
+            echo 'data: ' . wp_json_encode($chunk) . "\n\n";
+        }
+        echo "data: [DONE]\n\n";
+        return true;
     }
 
     /**

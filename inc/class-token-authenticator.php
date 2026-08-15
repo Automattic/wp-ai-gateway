@@ -211,33 +211,29 @@ final class TokenAuthenticator
      */
     public static function authorize(?WP_REST_Request $request = null)
     {
+        $token = $request instanceof WP_REST_Request ? self::bearer_token($request) : '';
+        if ('' !== $token) {
+            $principal = self::authenticate_client_token($token);
+            if (is_array($principal)) {
+                self::establish_principal($principal, $request);
+                return $principal;
+            }
+
+            $hash = self::sanitize_token_hash(get_option(OPTION_TOKEN_HASH, ''));
+            if ('' !== $hash && hash_equals($hash, hash('sha256', $token))) {
+                $principal = self::principal('legacy', 'Legacy site token', ['*'], 0, 'legacy');
+                self::establish_principal($principal, $request);
+                return $principal;
+            }
+
+            return OpenAiResponse::error('authentication_error', 'Invalid bearer token.', 403);
+        }
+
         if (current_user_can('manage_options')) {
             return self::principal('wordpress-user-' . self::current_user_id(), 'WordPress administrator', ['*'], self::current_user_id(), 'wordpress');
         }
 
-        if (!$request instanceof WP_REST_Request) {
-            return OpenAiResponse::error('authentication_error', 'Missing bearer token.', 401);
-        }
-
-        $token = self::bearer_token($request);
-        if ('' === $token) {
-            return OpenAiResponse::error('authentication_error', 'Missing bearer token.', 401);
-        }
-
-        $principal = self::authenticate_client_token($token);
-        if (is_array($principal)) {
-            self::establish_principal($principal, $request);
-            return $principal;
-        }
-
-        $hash = self::sanitize_token_hash(get_option(OPTION_TOKEN_HASH, ''));
-        if ('' !== $hash && hash_equals($hash, hash('sha256', $token))) {
-            $principal = self::principal('legacy', 'Legacy site token', ['*'], 0, 'legacy');
-            self::establish_principal($principal, $request);
-            return $principal;
-        }
-
-        return OpenAiResponse::error('authentication_error', 'Invalid bearer token.', 403);
+        return OpenAiResponse::error('authentication_error', 'Missing bearer token.', 401);
     }
 
     /**
