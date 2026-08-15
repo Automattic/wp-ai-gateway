@@ -271,15 +271,21 @@ final class AiClientBridge
             if (isset($function['description']) && !is_string($function['description'])) {
                 throw new \InvalidArgumentException('Function tool descriptions must be strings.');
             }
-            if (isset($function['parameters'])) {
-                if (!is_array($function['parameters']) || ([] !== $function['parameters'] && array_keys($function['parameters']) === range(0, count($function['parameters']) - 1))) {
+            $parameters = $function['parameters'] ?? null;
+            if (null !== $parameters) {
+                if (!is_array($parameters) || ([] !== $parameters && array_keys($parameters) === range(0, count($parameters) - 1))) {
                     throw new \InvalidArgumentException('Function tool parameters must be a JSON object.');
+                }
+                if ([] === $parameters) {
+                    $parameters = ['type' => 'object'];
+                } elseif (isset($parameters['properties']) && [] === $parameters['properties']) {
+                    unset($parameters['properties']);
                 }
             }
             $declarations[] = new \WordPress\AiClient\Tools\DTO\FunctionDeclaration(
                 $function['name'],
                 $function['description'] ?? '',
-                $function['parameters'] ?? null
+                $parameters
             );
         }
 

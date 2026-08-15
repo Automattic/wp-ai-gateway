@@ -408,6 +408,13 @@ namespace {
     assert_true('call_weather' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function call IDs must be preserved.');
     assert_true('{"city":"Paris"}' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['function']['arguments'], 'Function arguments must be JSON encoded.');
 
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('No arguments needed.')]));
+    Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
+        ['Authorization' => 'Bearer valid-token'],
+        ['messages' => [['role' => 'user', 'content' => 'No args']], 'tools' => [['type' => 'function', 'function' => ['name' => 'no_args', 'parameters' => ['type' => 'object', 'properties' => []]]]]]
+    ));
+    assert_true(['type' => 'object'] === $GLOBALS['wp_ai_gateway_declarations'][0]->parameters, 'Empty function properties must remain a JSON object schema upstream.');
+
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([
         new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_one', 'one', [])),
         new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_two', 'two', ['x' => 2])),
