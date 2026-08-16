@@ -238,6 +238,10 @@ final class AiClientBridge
         }
 
         $config = [];
+        $system_instruction = self::system_instruction_from_messages($payload['messages'] ?? []);
+        if ('' !== $system_instruction) {
+            $config['systemInstruction'] = $system_instruction;
+        }
         foreach (['max_tokens', 'temperature', 'top_p', 'stop', 'presence_penalty', 'frequency_penalty'] as $key) {
             if (array_key_exists($key, $payload)) {
                 $config[$key] = $payload[$key];
@@ -245,6 +249,31 @@ final class AiClientBridge
         }
 
         return $class::fromArray($config);
+    }
+
+    /**
+     * Collects OpenAI system messages for the AI Client model instruction.
+     *
+     * @param mixed $messages OpenAI messages payload.
+     * @return string
+     */
+    private static function system_instruction_from_messages($messages): string
+    {
+        if (!is_array($messages)) {
+            return '';
+        }
+
+        $instructions = [];
+        foreach ($messages as $message) {
+            if (!is_array($message) || 'system' !== ($message['role'] ?? null)) {
+                continue;
+            }
+            $content = self::message_content_to_text($message['content'] ?? '');
+            if ('' !== $content) {
+                $instructions[] = $content;
+            }
+        }
+        return implode("\n\n", $instructions);
     }
 
     /**
@@ -341,6 +370,12 @@ final class AiClientBridge
             $role = $message['role'] ?? null;
             if (!is_string($role) || !in_array($role, ['system', 'user', 'assistant', 'model', 'tool'], true)) {
                 throw new \InvalidArgumentException('Each message requires a supported role.');
+            }
+            if ('system' === $role) {
+                if (isset($message['tool_calls'])) {
+                    throw new \InvalidArgumentException('Only assistant messages may contain tool_calls.');
+                }
+                continue;
             }
             if ('tool' === $role) {
                 $id = $message['tool_call_id'] ?? null;
