@@ -395,28 +395,33 @@ final class AiClientBridge
                 continue;
             }
 
-            $parts = [];
             $content = self::message_content_to_text($message['content'] ?? '');
-            if ('' !== $content) {
-                $parts[] = new \WordPress\AiClient\Messages\DTO\MessagePart($content);
-            }
             if ('assistant' === $role || 'model' === $role) {
+                if ('' !== $content) {
+                    $normalized[] = new \WordPress\AiClient\Messages\DTO\Message(
+                        \WordPress\AiClient\Messages\Enums\MessageRoleEnum::model(),
+                        [new \WordPress\AiClient\Messages\DTO\MessagePart($content)]
+                    );
+                }
                 foreach (self::normalize_tool_calls($message['tool_calls'] ?? []) as $call) {
                     $call_names[$call->getId()] = $call->getName();
-                    $parts[] = new \WordPress\AiClient\Messages\DTO\MessagePart($call);
+                    $normalized[] = new \WordPress\AiClient\Messages\DTO\Message(
+                        \WordPress\AiClient\Messages\Enums\MessageRoleEnum::model(),
+                        [new \WordPress\AiClient\Messages\DTO\MessagePart($call)]
+                    );
                 }
-            } elseif (isset($message['tool_calls'])) {
+                continue;
+            }
+            if (isset($message['tool_calls'])) {
                 throw new \InvalidArgumentException('Only assistant messages may contain tool_calls.');
             }
-            if ([] === $parts) {
+            if ('' === $content) {
                 continue;
             }
 
             $normalized[] = new \WordPress\AiClient\Messages\DTO\Message(
-                'assistant' === $role || 'model' === $role
-                    ? \WordPress\AiClient\Messages\Enums\MessageRoleEnum::model()
-                    : \WordPress\AiClient\Messages\Enums\MessageRoleEnum::user(),
-                $parts
+                \WordPress\AiClient\Messages\Enums\MessageRoleEnum::user(),
+                [new \WordPress\AiClient\Messages\DTO\MessagePart($content)]
             );
         }
 

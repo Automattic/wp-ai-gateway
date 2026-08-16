@@ -455,17 +455,19 @@ namespace {
         ['role' => 'system', 'content' => 'Operate the site with tools.'],
         ['role' => 'system', 'content' => [['type' => 'text', 'text' => 'Verify every change.']]],
         ['role' => 'user', 'content' => 'Weather?'],
-        ['role' => 'assistant', 'content' => null, 'tool_calls' => [['id' => 'call_weather', 'type' => 'function', 'function' => ['name' => 'weather', 'arguments' => '{"city":"Paris"}']]]],
+        ['role' => 'assistant', 'content' => 'Checking the weather.', 'tool_calls' => [['id' => 'call_weather', 'type' => 'function', 'function' => ['name' => 'weather', 'arguments' => '{"city":"Paris"}']]]],
         ['role' => 'tool', 'tool_call_id' => 'call_weather', 'content' => '{"temperature":20}'],
         ['role' => 'assistant', 'content' => 'It is sunny.'],
         ['role' => 'user', 'content' => 'Change the site title.'],
     ]]));
     assert_true("Operate the site with tools.\n\nVerify every change." === $GLOBALS['wp_ai_gateway_model_config']['systemInstruction'], 'System messages must become the provider system instruction in order.');
-    assert_true(5 === count($GLOBALS['wp_ai_gateway_messages']), 'System messages must not remain in ordinary chat history.');
+    assert_true(6 === count($GLOBALS['wp_ai_gateway_messages']), 'System messages must be excluded while assistant text and function calls become standalone history items.');
     assert_true('Weather?' === $GLOBALS['wp_ai_gateway_messages'][0]->parts[0]->content, 'User history must remain first after system extraction.');
-    $function_response = $GLOBALS['wp_ai_gateway_messages'][2]->parts[0]->content;
+    assert_true('Checking the weather.' === $GLOBALS['wp_ai_gateway_messages'][1]->parts[0]->content, 'Assistant text before a function call must remain standalone.');
+    assert_true('weather' === $GLOBALS['wp_ai_gateway_messages'][2]->parts[0]->content->getName(), 'Assistant function calls must remain standalone.');
+    $function_response = $GLOBALS['wp_ai_gateway_messages'][3]->parts[0]->content;
     assert_true('weather' === $function_response->name && 20 === $function_response->response['temperature'], 'Tool result history must become decoded FunctionResponse parts.');
-    assert_true('Change the site title.' === $GLOBALS['wp_ai_gateway_messages'][4]->parts[0]->content, 'Follow-up user messages must remain after tool history.');
+    assert_true('Change the site title.' === $GLOBALS['wp_ai_gateway_messages'][5]->parts[0]->content, 'Follow-up user messages must remain after tool history.');
     assert_true('It is sunny.' === $followup->get_data()['choices'][0]['message']['content'], 'Tool-result follow-up must preserve final text.');
 
     $text_stream = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'stream']], 'stream' => true]));
