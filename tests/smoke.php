@@ -314,7 +314,7 @@ namespace WpAiGatewaySmoke {
     class FakeResult
     {
         private array $candidates;
-        public function __construct(FakeCandidate $candidate) { $this->candidates = [$candidate]; }
+        public function __construct(FakeCandidate ...$candidates) { $this->candidates = $candidates; }
         public function getCandidates(): array { return $this->candidates; }
     }
     class FakeModel {}
@@ -407,6 +407,18 @@ namespace {
     assert_true('tool_calls' === $tool_chat->get_data()['choices'][0]['finish_reason'], 'Function calls must finish with tool_calls.');
     assert_true('call_weather' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function call IDs must be preserved.');
     assert_true('{"city":"Paris"}' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['function']['arguments'], 'Function arguments must be JSON encoded.');
+
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(
+        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('I am checking now.')]),
+        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_bash', 'bash', ['command' => 'wp option update blogname "North Star"']))], 'tool_calls')
+    );
+    $text_then_tool = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
+        ['Authorization' => 'Bearer valid-token'],
+        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'Change the site title.']], 'tools' => [['type' => 'function', 'function' => ['name' => 'bash', 'parameters' => ['type' => 'object']]]]]
+    ));
+    assert_true('I am checking now.' === $text_then_tool->get_data()['choices'][0]['message']['content'], 'Text before a function call must be preserved.');
+    assert_true('call_bash' === $text_then_tool->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function calls after text candidates must be preserved.');
+    assert_true('tool_calls' === $text_then_tool->get_data()['choices'][0]['finish_reason'], 'Any function-call candidate must finish with tool_calls.');
 
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('No arguments needed.')]));
     Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(

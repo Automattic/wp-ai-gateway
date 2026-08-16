@@ -479,38 +479,47 @@ final class AiClientBridge
             throw new \InvalidArgumentException('Text generation did not return a structured result.');
         }
         $candidates = $result->getCandidates();
-        if (!is_array($candidates) || !isset($candidates[0]) || !method_exists($candidates[0], 'getMessage')) {
+        if (!is_array($candidates) || [] === $candidates) {
             throw new \InvalidArgumentException('Text generation result did not include a candidate.');
         }
-        $candidate = $candidates[0];
-        $message = $candidate->getMessage();
         $content = [];
         $tool_calls = [];
-        foreach ($message->getParts() as $part) {
-            if (method_exists($part, 'getText') && null !== $part->getText()) {
-                $content[] = $part->getText();
+        $finish_reason = 'stop';
+        foreach ($candidates as $candidate) {
+            if (!is_object($candidate) || !method_exists($candidate, 'getMessage')) {
+                throw new \InvalidArgumentException('Text generation result included an invalid candidate.');
             }
-            if (method_exists($part, 'getFunctionCall') && null !== $part->getFunctionCall()) {
-                $call = $part->getFunctionCall();
-                if (!is_string($call->getName()) || '' === $call->getName()) {
-                    throw new \InvalidArgumentException('Provider function calls require a non-empty name.');
-                }
-                $args = $call->getArgs();
-                if (null === $args || (is_array($args) && [] === $args)) {
-                    $args = new \stdClass();
-                }
-                $arguments = wp_json_encode($args);
-                if (!is_string($arguments)) {
-                    throw new \InvalidArgumentException('Function call arguments could not be JSON encoded.');
-                }
-                $tool_calls[] = [
-                    'id' => $call->getId() ?: 'call_' . wp_generate_uuid4(),
-                    'type' => 'function',
-                    'function' => ['name' => $call->getName(), 'arguments' => $arguments],
-                ];
+            $message = $candidate->getMessage();
+            if (!is_object($message) || !method_exists($message, 'getParts')) {
+                throw new \InvalidArgumentException('Text generation candidate did not include a message.');
             }
+            foreach ($message->getParts() as $part) {
+                if (method_exists($part, 'getText') && null !== $part->getText()) {
+                    $content[] = $part->getText();
+                }
+                if (method_exists($part, 'getFunctionCall') && null !== $part->getFunctionCall()) {
+                    $call = $part->getFunctionCall();
+                    if (!is_string($call->getName()) || '' === $call->getName()) {
+                        throw new \InvalidArgumentException('Provider function calls require a non-empty name.');
+                    }
+                    $args = $call->getArgs();
+                    if (null === $args || (is_array($args) && [] === $args)) {
+                        $args = new \stdClass();
+                    }
+                    $arguments = wp_json_encode($args);
+                    if (!is_string($arguments)) {
+                        throw new \InvalidArgumentException('Function call arguments could not be JSON encoded.');
+                    }
+                    $tool_calls[] = [
+                        'id' => $call->getId() ?: 'call_' . wp_generate_uuid4(),
+                        'type' => 'function',
+                        'function' => ['name' => $call->getName(), 'arguments' => $arguments],
+                    ];
+                }
+            }
+            $finish_reason = self::finish_reason($candidate);
         }
-        $finish_reason = [] !== $tool_calls ? 'tool_calls' : self::finish_reason($candidate);
+        $finish_reason = [] !== $tool_calls ? 'tool_calls' : $finish_reason;
         $openai_message = ['role' => 'assistant', 'content' => [] === $content ? null : implode('', $content)];
         if ([] !== $tool_calls) {
             $openai_message['tool_calls'] = $tool_calls;
