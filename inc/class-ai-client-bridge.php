@@ -47,7 +47,7 @@ final class AiClientBridge
      * @param array<string, mixed>                $payload OpenAI-compatible request payload.
      * @return array<string, mixed>|WP_REST_Response
      */
-    public static function generate_text_result(array $route, array $payload)
+    public static function generate_response_result(array $route, array $payload)
     {
         $registry = self::registry();
         if (!$registry || !method_exists($registry, 'getProviderModel')) {
@@ -57,6 +57,7 @@ final class AiClientBridge
         self::bind_provider_api_key($registry, $route['provider']);
 
         try {
+            $payload = self::normalize_responses_payload($payload);
             $declarations = self::normalize_tools($payload['tools'] ?? []);
             if ('none' === self::normalize_tool_choice($payload['tool_choice'] ?? null)) {
                 $declarations = [];
@@ -79,10 +80,126 @@ final class AiClientBridge
         }
 
         try {
-            return self::completion_from_result($result);
+            return self::generation_from_result($result);
         } catch (\InvalidArgumentException $e) {
             return OpenAiResponse::error('server_error', $e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Converts the Responses API request into the provider-neutral generation shape.
+     *
+     * @param array<string,mixed> $payload Responses request.
+     * @return array<string,mixed>
+     */
+    private static function normalize_responses_payload(array $payload): array
+    {
+        $messages = [];
+        if (is_string($payload['instructions'] ?? null) && '' !== trim($payload['instructions'])) {
+            $messages[] = ['role' => 'system', 'content' => $payload['instructions']];
+        }
+
+        $input = $payload['input'] ?? null;
+        if (is_string($input)) {
+            $input = [['role' => 'user', 'content' => $input]];
+        }
+        if (!is_array($input) || [] === $input) {
+            throw new \InvalidArgumentException('input must be a non-empty string or array.');
+        }
+
+        $call_names = [];
+        foreach ($input as $item) {
+            if (!is_array($item)) {
+                throw new \InvalidArgumentException('Each input item must be an object.');
+            }
+            $type = $item['type'] ?? null;
+            if ('reasoning' === $type) {
+                continue;
+            }
+            if ('function_call' === $type) {
+                $id = $item['call_id'] ?? null;
+                $name = $item['name'] ?? null;
+                $arguments = $item['arguments'] ?? null;
+                if (!is_string($id) || '' === $id || !is_string($name) || '' === $name || !is_string($arguments)) {
+                    throw new \InvalidArgumentException('Function call input requires call_id, name, and JSON string arguments.');
+                }
+                $call_names[$id] = $name;
+                $messages[] = [
+                    'role' => 'assistant',
+                    'content' => null,
+                    'tool_calls' => [[
+                        'id' => $id,
+                        'type' => 'function',
+                        'function' => ['name' => $name, 'arguments' => $arguments],
+                    ]],
+                ];
+                continue;
+            }
+            if ('function_call_output' === $type) {
+                $id = $item['call_id'] ?? null;
+                if (!is_string($id) || '' === $id || !isset($call_names[$id])) {
+                    throw new \InvalidArgumentException('Function call output must correspond to a preceding function call.');
+                }
+                $output = $item['output'] ?? '';
+                $messages[] = [
+                    'role' => 'tool',
+                    'tool_call_id' => $id,
+                    'name' => $call_names[$id],
+                    'content' => is_string($output) ? $output : wp_json_encode($output),
+                ];
+                continue;
+            }
+
+            $role = $item['role'] ?? null;
+            if (!is_string($role) || !in_array($role, ['system', 'developer', 'user', 'assistant'], true)) {
+                throw new \InvalidArgumentException('Message input requires a supported role.');
+            }
+            $messages[] = [
+                'role' => 'developer' === $role ? 'system' : $role,
+                'content' => self::responses_content_to_text($item['content'] ?? ''),
+            ];
+        }
+
+        $tools = [];
+        foreach ($payload['tools'] ?? [] as $tool) {
+            if (!is_array($tool) || 'function' !== ($tool['type'] ?? null)) {
+                throw new \InvalidArgumentException('Each tool must have type "function".');
+            }
+            $tools[] = [
+                'type' => 'function',
+                'function' => [
+                    'name' => $tool['name'] ?? null,
+                    'description' => $tool['description'] ?? '',
+                    'parameters' => $tool['parameters'] ?? null,
+                ],
+            ];
+        }
+
+        $normalized = $payload;
+        $normalized['messages'] = $messages;
+        $normalized['tools'] = $tools;
+        if (array_key_exists('max_output_tokens', $payload)) {
+            $normalized['max_tokens'] = $payload['max_output_tokens'];
+        }
+        return $normalized;
+    }
+
+    /** Converts Responses message content parts to text. */
+    private static function responses_content_to_text($content): string
+    {
+        if (is_string($content)) {
+            return $content;
+        }
+        if (!is_array($content)) {
+            return '';
+        }
+        $text = [];
+        foreach ($content as $part) {
+            if (is_array($part) && in_array($part['type'] ?? null, ['input_text', 'output_text', 'text'], true) && is_string($part['text'] ?? null)) {
+                $text[] = $part['text'];
+            }
+        }
+        return implode("\n", $text);
     }
 
     /**
@@ -478,7 +595,7 @@ final class AiClientBridge
      * @param object $result AI Client generative result.
      * @return array<string, mixed>
      */
-    private static function completion_from_result($result): array
+    private static function generation_from_result($result): array
     {
         if (!is_object($result) || !method_exists($result, 'getCandidates')) {
             throw new \InvalidArgumentException('Text generation did not return a structured result.');
@@ -525,11 +642,11 @@ final class AiClientBridge
             $finish_reason = self::finish_reason($candidate);
         }
         $finish_reason = [] !== $tool_calls ? 'tool_calls' : $finish_reason;
-        $openai_message = ['role' => 'assistant', 'content' => [] === $content ? null : implode('', $content)];
-        if ([] !== $tool_calls) {
-            $openai_message['tool_calls'] = $tool_calls;
-        }
-        return ['index' => 0, 'message' => $openai_message, 'finish_reason' => $finish_reason];
+        return [
+            'content' => [] === $content ? null : implode('', $content),
+            'tool_calls' => $tool_calls,
+            'finish_reason' => $finish_reason,
+        ];
     }
 
     /**

@@ -17,103 +17,90 @@ use WP_REST_Response;
  */
 final class OpenAiResponse
 {
-    /**
-     * Creates an OpenAI-compatible chat completion response.
-     *
-     * @param string               $id Completion ID.
-     * @param string               $model Requested model ID.
-     * @param array<string, mixed> $choice Generated choice.
-     * @return WP_REST_Response
-     */
-    public static function chat_completion(string $id, string $model, array $choice): WP_REST_Response
+    /** Builds a completed Responses API document. */
+    public static function response(string $id, string $model, array $generation): WP_REST_Response
     {
-        return new WP_REST_Response([
-            'id' => $id,
-            'object' => 'chat.completion',
-            'created' => time(),
-            'model' => $model,
-            'choices' => [$choice],
-            'usage' => null,
-        ]);
+        return new WP_REST_Response(self::response_payload($id, $model, $generation));
     }
 
-    /**
-     * Creates a REST response that will be served as Server-Sent Events.
-     *
-     * @param string               $id Completion ID.
-     * @param string               $model Requested model ID.
-     * @param array<string, mixed> $choice Generated choice.
-     * @return WP_REST_Response
-     */
-    public static function chat_completion_stream(string $id, string $model, array $choice): WP_REST_Response
+    /** Builds Responses API SSE events from a provider-neutral generation result. */
+    public static function response_stream(string $id, string $model, array $generation): WP_REST_Response
     {
+        $events = [];
+        $sequence = 0;
         $created = time();
-        $chunks = [[
-            'id' => $id,
-            'object' => 'chat.completion.chunk',
-            'created' => $created,
-            'model' => $model,
-            'choices' => [[
-                'index' => 0,
-                'delta' => ['role' => 'assistant'],
-                'finish_reason' => null,
-            ]],
-        ]];
+        $events[] = self::event('response.created', [
+            'type' => 'response.created',
+            'sequence_number' => $sequence++,
+            'response' => ['id' => $id, 'object' => 'response', 'created_at' => $created, 'status' => 'in_progress', 'model' => $model, 'output' => []],
+        ]);
 
-        $message = $choice['message'];
-        if (is_string($message['content'] ?? null) && '' !== $message['content']) {
-            $chunks[] = self::chat_completion_chunk($id, $model, $created, ['content' => $message['content']], null);
+        $output_index = 0;
+        if (is_string($generation['content'] ?? null) && '' !== $generation['content']) {
+            $item_id = 'msg_' . wp_generate_uuid4();
+            $events[] = self::event('response.output_item.added', [
+                'type' => 'response.output_item.added', 'sequence_number' => $sequence++, 'output_index' => $output_index,
+                'item' => ['id' => $item_id, 'type' => 'message', 'role' => 'assistant', 'status' => 'in_progress', 'content' => []],
+            ]);
+            $events[] = self::event('response.output_text.delta', [
+                'type' => 'response.output_text.delta', 'sequence_number' => $sequence++, 'output_index' => $output_index,
+                'item_id' => $item_id, 'content_index' => 0, 'delta' => $generation['content'], 'logprobs' => [],
+            ]);
+            $events[] = self::event('response.output_item.done', [
+                'type' => 'response.output_item.done', 'sequence_number' => $sequence++, 'output_index' => $output_index++,
+                'item' => ['id' => $item_id, 'type' => 'message', 'role' => 'assistant', 'status' => 'completed', 'content' => [['type' => 'output_text', 'text' => $generation['content'], 'annotations' => []]]],
+            ]);
         }
-        if (isset($message['tool_calls']) && is_array($message['tool_calls'])) {
-            $tool_calls = [];
-            foreach (array_values($message['tool_calls']) as $index => $tool_call) {
-                $tool_call['index'] = $index;
-                $tool_calls[] = $tool_call;
-            }
-            $chunks[] = self::chat_completion_chunk($id, $model, $created, ['tool_calls' => $tool_calls], null);
-        }
-        $chunks[] = [
-            'id' => $id,
-            'object' => 'chat.completion.chunk',
-            'created' => $created,
-            'model' => $model,
-            'choices' => [[
-                'index' => 0,
-                'delta' => new \stdClass(),
-                'finish_reason' => $choice['finish_reason'],
-            ]],
-        ];
 
-        $response = new WP_REST_Response(['chunks' => $chunks]);
+        foreach ($generation['tool_calls'] ?? [] as $tool_call) {
+            $item_id = 'fc_' . wp_generate_uuid4();
+            $call_id = $tool_call['id'];
+            $name = $tool_call['function']['name'];
+            $arguments = $tool_call['function']['arguments'];
+            $events[] = self::event('response.output_item.added', [
+                'type' => 'response.output_item.added', 'sequence_number' => $sequence++, 'output_index' => $output_index,
+                'item' => ['id' => $item_id, 'type' => 'function_call', 'call_id' => $call_id, 'name' => $name, 'arguments' => '', 'status' => 'in_progress'],
+            ]);
+            $events[] = self::event('response.function_call_arguments.delta', [
+                'type' => 'response.function_call_arguments.delta', 'sequence_number' => $sequence++, 'output_index' => $output_index,
+                'item_id' => $item_id, 'delta' => $arguments,
+            ]);
+            $events[] = self::event('response.function_call_arguments.done', [
+                'type' => 'response.function_call_arguments.done', 'sequence_number' => $sequence++, 'output_index' => $output_index,
+                'item_id' => $item_id, 'arguments' => $arguments,
+            ]);
+            $events[] = self::event('response.output_item.done', [
+                'type' => 'response.output_item.done', 'sequence_number' => $sequence++, 'output_index' => $output_index++,
+                'item' => ['id' => $item_id, 'type' => 'function_call', 'call_id' => $call_id, 'name' => $name, 'arguments' => $arguments, 'status' => 'completed'],
+            ]);
+        }
+
+        $events[] = self::event('response.completed', [
+            'type' => 'response.completed', 'sequence_number' => $sequence,
+            'response' => self::response_payload($id, $model, $generation),
+        ]);
+        $response = new WP_REST_Response(['events' => $events]);
         $response->header('Content-Type', 'text/event-stream; charset=utf-8');
         $response->header('Cache-Control', 'no-cache');
         $response->header('X-WP-AI-Gateway-SSE', '1');
         return $response;
     }
 
-    /**
-     * Creates one OpenAI-compatible stream chunk.
-     *
-     * @param string               $id Completion ID.
-     * @param string               $model Requested model ID.
-     * @param int                  $created Creation timestamp.
-     * @param array<string, mixed> $delta Assistant delta.
-     * @param string|null          $finish_reason Finish reason.
-     * @return array<string, mixed>
-     */
-    private static function chat_completion_chunk(string $id, string $model, int $created, array $delta, ?string $finish_reason): array
+    private static function response_payload(string $id, string $model, array $generation): array
     {
-        return [
-            'id' => $id,
-            'object' => 'chat.completion.chunk',
-            'created' => $created,
-            'model' => $model,
-            'choices' => [[
-                'index' => 0,
-                'delta' => $delta,
-                'finish_reason' => $finish_reason,
-            ]],
-        ];
+        $output = [];
+        if (is_string($generation['content'] ?? null) && '' !== $generation['content']) {
+            $output[] = ['id' => 'msg_' . wp_generate_uuid4(), 'type' => 'message', 'role' => 'assistant', 'status' => 'completed', 'content' => [['type' => 'output_text', 'text' => $generation['content'], 'annotations' => []]]];
+        }
+        foreach ($generation['tool_calls'] ?? [] as $tool_call) {
+            $output[] = ['id' => 'fc_' . wp_generate_uuid4(), 'type' => 'function_call', 'call_id' => $tool_call['id'], 'name' => $tool_call['function']['name'], 'arguments' => $tool_call['function']['arguments'], 'status' => 'completed'];
+        }
+        return ['id' => $id, 'object' => 'response', 'created_at' => time(), 'status' => 'completed', 'model' => $model, 'output' => $output, 'usage' => null, 'error' => null, 'incomplete_details' => null];
+    }
+
+    private static function event(string $name, array $data): array
+    {
+        return ['event' => $name, 'data' => $data];
     }
     /**
      * Creates an OpenAI-compatible error response.
