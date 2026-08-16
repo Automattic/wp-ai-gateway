@@ -284,7 +284,8 @@ final class CliCommand
             'provider_registered' => '' !== $provider && in_array($provider, $registered_providers, true),
             'endpoints' => [
                 'models' => rest_url(REST_NAMESPACE . '/models'),
-                'chat_completions' => rest_url(REST_NAMESPACE . '/chat/completions'),
+                'responses' => rest_url(REST_NAMESPACE . '/responses'),
+                'embeddings' => rest_url(REST_NAMESPACE . '/embeddings'),
             ],
         ];
     }

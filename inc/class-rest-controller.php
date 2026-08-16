@@ -37,10 +37,10 @@ final class RestController
 
         register_rest_route(
             REST_NAMESPACE,
-            '/chat/completions',
+            '/responses',
             [
                 'methods' => 'POST',
-                'callback' => [self::class, 'handle_chat_completions'],
+                'callback' => [self::class, 'handle_responses'],
                 'permission_callback' => [self::class, 'permission_callback'],
             ]
         );
@@ -119,12 +119,12 @@ final class RestController
     }
 
     /**
-     * Handles OpenAI-compatible chat completions.
+     * Handles provider-neutral generation through the Responses API.
      *
      * @param WP_REST_Request $request REST request.
      * @return WP_REST_Response|WP_Error
      */
-    public static function handle_chat_completions(WP_REST_Request $request)
+    public static function handle_responses(WP_REST_Request $request)
     {
         $authorized = TokenAuthenticator::authorize($request);
         if ($authorized instanceof WP_REST_Response) {
@@ -136,9 +136,8 @@ final class RestController
             return OpenAiResponse::error('invalid_request_error', 'Request body must be JSON.', 400);
         }
 
-        $messages = $payload['messages'] ?? null;
-        if (!is_array($messages) || [] === $messages) {
-            return OpenAiResponse::error('invalid_request_error', 'Request body must include messages.', 400);
+        if (!array_key_exists('input', $payload)) {
+            return OpenAiResponse::error('invalid_request_error', 'Request body must include input.', 400);
         }
 
         $requested_model = is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT;
@@ -151,18 +150,18 @@ final class RestController
             return $route;
         }
 
-        $completion = AiClientBridge::generate_text_result($route, $payload);
-        if ($completion instanceof WP_REST_Response) {
-            return $completion;
+        $generation = AiClientBridge::generate_response_result($route, $payload);
+        if ($generation instanceof WP_REST_Response) {
+            return $generation;
         }
 
-        $id = 'chatcmpl-' . wp_generate_uuid4();
+        $id = 'resp_' . wp_generate_uuid4();
         $model = is_string($payload['model'] ?? null) ? $payload['model'] : MODEL_SITE_DEFAULT;
         if (true === ($payload['stream'] ?? false)) {
-            return OpenAiResponse::chat_completion_stream($id, $model, $completion);
+            return OpenAiResponse::response_stream($id, $model, $generation);
         }
 
-        return OpenAiResponse::chat_completion($id, $model, $completion);
+        return OpenAiResponse::response($id, $model, $generation);
     }
 
     /**
@@ -182,7 +181,7 @@ final class RestController
         }
 
         $data = $response->get_data();
-        if (!is_array($data) || !isset($data['chunks']) || !is_array($data['chunks'])) {
+        if (!is_array($data) || !isset($data['events']) || !is_array($data['events'])) {
             return $served;
         }
 
@@ -190,8 +189,9 @@ final class RestController
             $server->send_header('Content-Type', 'text/event-stream; charset=utf-8');
             $server->send_header('Cache-Control', 'no-cache');
         }
-        foreach ($data['chunks'] as $chunk) {
-            echo 'data: ' . wp_json_encode($chunk) . "\n\n";
+        foreach ($data['events'] as $event) {
+            echo 'event: ' . $event['event'] . "\n";
+            echo 'data: ' . wp_json_encode($event['data']) . "\n\n";
         }
         echo "data: [DONE]\n\n";
         return true;

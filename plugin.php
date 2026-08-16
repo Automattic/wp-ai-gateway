@@ -32,7 +32,6 @@ require_once __DIR__ . '/inc/class-token-authenticator.php';
 require_once __DIR__ . '/inc/class-provider-router.php';
 require_once __DIR__ . '/inc/class-ai-client-bridge.php';
 require_once __DIR__ . '/inc/class-rest-controller.php';
-require_once __DIR__ . '/inc/class-streaming-proxy.php';
 require_once __DIR__ . '/inc/functions.php';
 require_once __DIR__ . '/inc/class-settings-page.php';
 require_once __DIR__ . '/inc/class-cli-command.php';

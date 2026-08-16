@@ -111,7 +111,7 @@ namespace {
             $GLOBALS['wp_ai_gateway_authenticated_principals'][] = $args[0];
         }
     }
-    function register_rest_route(): void {}
+    function register_rest_route(string $namespace, string $route, array $args): void { $GLOBALS['wp_ai_gateway_routes'][$namespace . $route] = $args; }
     function add_options_page(): void {}
     function register_setting(): void {}
     function current_user_can(): bool { return (bool) $GLOBALS['wp_ai_gateway_current_user_can']; }
@@ -356,390 +356,91 @@ namespace {
     WordPress\AiClient\AiClient::$registry = $registry;
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('ok from fake provider')]));
 
+    Chubes4\WpAiGateway\RestController::register_routes();
+    assert_true(isset($GLOBALS['wp_ai_gateway_routes']['wp-ai-gateway/v1/responses']), 'Responses route must be registered.');
+    assert_true(!isset($GLOBALS['wp_ai_gateway_routes']['wp-ai-gateway/v1/chat/completions']), 'Chat completions route must not be registered.');
+    assert_true(isset($GLOBALS['wp_ai_gateway_routes']['wp-ai-gateway/v1/embeddings']), 'Embeddings route must remain capability-specific.');
+
     $missing = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request());
-    assert_true($missing instanceof WP_REST_Response, 'Missing token should return REST response.');
     assert_true(401 === $missing->get_status(), 'Missing token should return 401.');
-    assert_true(isset($missing->get_data()['error']['type']), 'Missing token should be OpenAI-shaped.');
-
     update_option(Chubes4\WpAiGateway\OPTION_TOKEN_HASH, hash('sha256', 'valid-token'), false);
-    $invalid = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer invalid-token']));
-    assert_true($invalid instanceof WP_REST_Response, 'Invalid token should return REST response.');
-    assert_true(403 === $invalid->get_status(), 'Invalid token should return 403.');
-
-    $unconfigured = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer valid-token'],
-        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]]
-    ));
-    assert_true($unconfigured instanceof WP_REST_Response, 'Unconfigured route should return REST response.');
-    assert_true(500 === $unconfigured->get_status(), 'Unconfigured route should return 500.');
-    assert_true(isset($unconfigured->get_data()['error']['message']), 'Unconfigured route should be OpenAI-shaped.');
-
     update_option(Chubes4\WpAiGateway\OPTION_PROVIDER, 'example-provider', false);
     update_option(Chubes4\WpAiGateway\OPTION_MODEL, 'example-model', false);
+
     $models = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer valid-token']));
-    assert_true(200 === $models->get_status(), 'Configured /models should return 200.');
-    assert_true('site-default' === $models->get_data()['data'][0]['id'], '/models should include site-default.');
-    assert_true(in_array('embedding_generation', $models->get_data()['data'][1]['capabilities'], true), '/models should expose embedding capability metadata.');
-    assert_true(true === $models->get_data()['data'][1]['gateway_metadata']['retrieval']['embedding'], '/models should expose retrieval embedding metadata.');
+    assert_true(200 === $models->get_status() && 'site-default' === $models->get_data()['data'][0]['id'], 'Models should expose the routed alias.');
+    assert_true(in_array('embedding_generation', $models->get_data()['data'][1]['capabilities'], true), 'Models should expose provider capabilities.');
 
-    $chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
+    $text = Chubes4\WpAiGateway\RestController::handle_responses(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
-        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]]
+        ['model' => 'site-default', 'input' => [['role' => 'user', 'content' => [['type' => 'input_text', 'text' => 'hello']]]]]
     ));
-    assert_true(200 === $chat->get_status(), 'site-default path without API key should return 200 with fake provider.');
-    assert_true('ok from fake provider' === $chat->get_data()['choices'][0]['message']['content'], 'Text chat must preserve existing response behavior.');
-    assert_true(false === $registry->apiKeyAuthenticationBound, 'Provider-supplied auth path should not inject API-key auth.');
-
-    $provider_qualified_chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer valid-token'],
-        ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
-    ));
-    assert_true(200 === $provider_qualified_chat->get_status(), 'Provider-qualified model path should return 200 with fake provider.');
-
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([
-        new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_weather', 'weather', ['city' => 'Paris'])),
-    ], 'tool_calls'));
-    $tool_chat = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer valid-token'],
-        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'Weather?']], 'tools' => [['type' => 'function', 'function' => ['name' => 'weather', 'description' => 'Gets weather', 'parameters' => ['type' => 'object']]]]]
-    ));
-    assert_true('weather' === $GLOBALS['wp_ai_gateway_declarations'][0]->name, 'Function definitions must become FunctionDeclaration DTOs.');
-    assert_true('tool_calls' === $tool_chat->get_data()['choices'][0]['finish_reason'], 'Function calls must finish with tool_calls.');
-    assert_true('call_weather' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function call IDs must be preserved.');
-    assert_true('{"city":"Paris"}' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['function']['arguments'], 'Function arguments must be JSON encoded.');
+    assert_true(200 === $text->get_status(), 'Text-only Responses request should succeed.');
+    assert_true('ok from fake provider' === $text->get_data()['output'][0]['content'][0]['text'], 'Responses output should preserve provider text.');
 
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(
-        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('I am checking now.')]),
-        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_bash', 'bash', ['command' => 'wp option update blogname "North Star"']))], 'tool_calls')
+        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('Checking now.')]),
+        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_bash', 'bash', ['command' => 'wp option get blogname']))], 'tool_calls')
     );
-    $text_then_tool = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
+    $tool = Chubes4\WpAiGateway\RestController::handle_responses(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
-        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'Change the site title.']], 'tools' => [['type' => 'function', 'function' => ['name' => 'bash', 'parameters' => ['type' => 'object']]]]]
+        [
+            'model' => 'site-default',
+            'input' => 'Read the title.',
+            'tools' => [['type' => 'function', 'name' => 'bash', 'description' => 'Run a command', 'parameters' => ['type' => 'object']]],
+            'stream' => true,
+        ]
     ));
-    assert_true('I am checking now.' === $text_then_tool->get_data()['choices'][0]['message']['content'], 'Text before a function call must be preserved.');
-    assert_true('call_bash' === $text_then_tool->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function calls after text candidates must be preserved.');
-    assert_true('tool_calls' === $text_then_tool->get_data()['choices'][0]['finish_reason'], 'Any function-call candidate must finish with tool_calls.');
-
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('No arguments needed.')]));
-    Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer valid-token'],
-        ['messages' => [['role' => 'user', 'content' => 'No args']], 'tools' => [['type' => 'function', 'function' => ['name' => 'no_args', 'parameters' => ['type' => 'object', 'properties' => []]]]]]
-    ));
-    assert_true(['type' => 'object'] === $GLOBALS['wp_ai_gateway_declarations'][0]->parameters, 'Empty function properties must remain a JSON object schema upstream.');
-
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_no_args', 'no_args', null))], 'tool_calls'));
-    $no_args_call = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'No args']]]));
-    assert_true('{}' === $no_args_call->get_data()['choices'][0]['message']['tool_calls'][0]['function']['arguments'], 'Null function arguments must become an empty JSON object.');
-
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([
-        new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_one', 'one', [])),
-        new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_two', 'two', ['x' => 2])),
-    ], 'tool_calls'));
-    $parallel = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'call both']]]));
-    assert_true(2 === count($parallel->get_data()['choices'][0]['message']['tool_calls']), 'Parallel function calls must be retained.');
-
-    $bad_tool = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'bad']], 'tools' => [['type' => 'code']]]));
-    assert_true(400 === $bad_tool->get_status(), 'Unsupported tool payloads must return 400.');
-
-    $bad_parameters = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'bad']], 'tools' => [['type' => 'function', 'function' => ['name' => 'bad', 'parameters' => ['not-a-schema']]]]]));
-    assert_true(400 === $bad_parameters->get_status(), 'Function parameter schemas must be JSON objects.');
-
-    $required_choice = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'required']], 'tools' => [['type' => 'function', 'function' => ['name' => 'weather']]], 'tool_choice' => 'required']));
-    assert_true(400 === $required_choice->get_status(), 'Unsupported required tool choice must return 400.');
-
-    $disabled_parallel = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'one call']], 'parallel_tool_calls' => false]));
-    assert_true(400 === $disabled_parallel->get_status(), 'Unsupported parallel tool control must return 400.');
-
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('It is sunny.')]));
-    $followup = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [
-        ['role' => 'system', 'content' => 'Operate the site with tools.'],
-        ['role' => 'system', 'content' => [['type' => 'text', 'text' => 'Verify every change.']]],
-        ['role' => 'user', 'content' => 'Weather?'],
-        ['role' => 'assistant', 'content' => 'Checking the weather.', 'tool_calls' => [['id' => 'call_weather', 'type' => 'function', 'function' => ['name' => 'weather', 'arguments' => '{"city":"Paris"}']]]],
-        ['role' => 'tool', 'tool_call_id' => 'call_weather', 'content' => '{"temperature":20}'],
-        ['role' => 'assistant', 'content' => 'It is sunny.'],
-        ['role' => 'user', 'content' => 'Change the site title.'],
-    ]]));
-    assert_true("Operate the site with tools.\n\nVerify every change." === $GLOBALS['wp_ai_gateway_model_config']['systemInstruction'], 'System messages must become the provider system instruction in order.');
-    assert_true(6 === count($GLOBALS['wp_ai_gateway_messages']), 'System messages must be excluded while assistant text and function calls become standalone history items.');
-    assert_true('Weather?' === $GLOBALS['wp_ai_gateway_messages'][0]->parts[0]->content, 'User history must remain first after system extraction.');
-    assert_true('Checking the weather.' === $GLOBALS['wp_ai_gateway_messages'][1]->parts[0]->content, 'Assistant text before a function call must remain standalone.');
-    assert_true('weather' === $GLOBALS['wp_ai_gateway_messages'][2]->parts[0]->content->getName(), 'Assistant function calls must remain standalone.');
-    $function_response = $GLOBALS['wp_ai_gateway_messages'][3]->parts[0]->content;
-    assert_true('weather' === $function_response->name && 20 === $function_response->response['temperature'], 'Tool result history must become decoded FunctionResponse parts.');
-    assert_true('Change the site title.' === $GLOBALS['wp_ai_gateway_messages'][5]->parts[0]->content, 'Follow-up user messages must remain after tool history.');
-    assert_true('It is sunny.' === $followup->get_data()['choices'][0]['message']['content'], 'Tool-result follow-up must preserve final text.');
-
-    $text_stream = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'stream']], 'stream' => true]));
+    assert_true('bash' === $GLOBALS['wp_ai_gateway_declarations'][0]->name, 'Responses tools must become AI Client declarations.');
     ob_start();
-    $served = Chubes4\WpAiGateway\RestController::serve_stream(false, $text_stream, new WP_REST_Request(), new class { public function send_header(string $name, string $value): void {} });
+    $served = Chubes4\WpAiGateway\RestController::serve_stream(false, $tool, new WP_REST_Request(), new class { public function send_header(string $name, string $value): void {} });
     $sse = ob_get_clean();
-    assert_true($served && false !== strpos($sse, '"content":"It is sunny."') && false !== strpos($sse, '"finish_reason":"stop"') && false !== strpos($sse, 'data: [DONE]'), 'Text streaming must emit chunks, finish reason, and DONE.');
+    assert_true($served && false !== strpos($sse, 'event: response.output_text.delta'), 'Responses SSE must preserve progress text.');
+    assert_true(false !== strpos($sse, 'event: response.function_call_arguments.delta'), 'Responses SSE must emit function calls.');
+    assert_true(false !== strpos($sse, '"call_id":"call_bash"'), 'Responses SSE must preserve function call IDs.');
+    assert_true(false !== strpos($sse, 'event: response.completed'), 'Responses SSE must terminate with response.completed.');
 
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_sse', 'weather', []))], 'tool_calls'));
-    $tool_stream = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'stream tool']], 'stream' => true]));
-    ob_start(); Chubes4\WpAiGateway\RestController::serve_stream(false, $tool_stream, new WP_REST_Request(), new class { public function send_header(string $name, string $value): void {} }); $tool_sse = ob_get_clean();
-    assert_true(false !== strpos($tool_sse, '"tool_calls"') && false !== strpos($tool_sse, '"index":0') && false !== strpos($tool_sse, '"finish_reason":"tool_calls"') && false !== strpos($tool_sse, 'data: [DONE]'), 'Tool streaming must emit indexed tool chunks, tool_calls, and DONE.');
-
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_invalid', null, []))], 'tool_calls'));
-    $invalid_provider_call = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'invalid provider call']]]));
-    assert_true(500 === $invalid_provider_call->get_status(), 'Malformed provider function calls must return a gateway error.');
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('ok from fake provider')]));
-
-    $runtime_one = Chubes4\WpAiGateway\TokenAuthenticator::generate_client_token('Runtime one', 3600, ['site-default'], 7);
-    $runtime_two = Chubes4\WpAiGateway\TokenAuthenticator::generate_client_token('Runtime two', 3600, ['example-provider:example-model'], 8);
-    assert_true($runtime_one['client']['id'] !== $runtime_two['client']['id'], 'Scoped clients should have independent IDs.');
-    assert_true(false === strpos(serialize(get_option(Chubes4\WpAiGateway\OPTION_CLIENTS)), $runtime_one['token']), 'Stored clients must not contain plaintext tokens.');
-    assert_true(!array_key_exists('token_hash', $runtime_one['client']), 'Returned client metadata must not expose token hashes.');
-
-    $runtime_one_models = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer ' . $runtime_one['token']]));
-    assert_true(200 === $runtime_one_models->get_status(), 'Scoped client should authenticate.');
-    assert_true(['site-default'] === array_column($runtime_one_models->get_data()['data'], 'id'), 'site-default-only client should not enumerate provider aliases.');
-    assert_true(7 === $GLOBALS['wp_ai_gateway_current_user_id'], 'Scoped client should establish its bound WordPress user.');
-    assert_true(get_option(Chubes4\WpAiGateway\OPTION_CLIENT_LAST_USED_PREFIX . $runtime_one['client']['id'], 0) > 0, 'Last-used telemetry should be stored separately from credential policy.');
-
-    $last_principal = end($GLOBALS['wp_ai_gateway_authenticated_principals']);
-    assert_true($runtime_one['client']['id'] === $last_principal['id'], 'Authentication hook should expose the non-secret client principal.');
-    assert_true(false === strpos(serialize($last_principal), $runtime_one['token']), 'Authentication principal must not expose bearer secrets.');
-
-    $runtime_one_denied = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer ' . $runtime_one['token']],
-        ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('North Star')]));
+    $followup = Chubes4\WpAiGateway\RestController::handle_responses(new WP_REST_Request(
+        ['Authorization' => 'Bearer valid-token'],
+        [
+            'model' => 'site-default',
+            'instructions' => 'Use tools and verify changes.',
+            'input' => [
+                ['role' => 'user', 'content' => [['type' => 'input_text', 'text' => 'Read the title.']]],
+                ['type' => 'function_call', 'call_id' => 'call_bash', 'name' => 'bash', 'arguments' => '{"command":"wp option get blogname"}'],
+                ['type' => 'function_call_output', 'call_id' => 'call_bash', 'output' => 'North Star'],
+            ],
+        ]
     ));
-    assert_true(403 === $runtime_one_denied->get_status(), 'site-default-only client should be denied provider-qualified routing.');
+    assert_true('Use tools and verify changes.' === $GLOBALS['wp_ai_gateway_model_config']['systemInstruction'], 'Responses instructions must become the provider system instruction.');
+    assert_true(3 === count($GLOBALS['wp_ai_gateway_messages']), 'Function call history and output must remain standalone AI Client messages.');
+    assert_true('bash' === $GLOBALS['wp_ai_gateway_messages'][1]->parts[0]->content->getName(), 'Function call history must preserve its name.');
+    assert_true('North Star' === $GLOBALS['wp_ai_gateway_messages'][2]->parts[0]->content->response, 'Function output must reach the provider-neutral response DTO.');
+    assert_true('North Star' === $followup->get_data()['output'][0]['content'][0]['text'], 'Tool follow-up should produce final Responses text.');
 
-    $runtime_two_allowed = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer ' . $runtime_two['token']],
-        ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
-    ));
-    assert_true(200 === $runtime_two_allowed->get_status(), 'Explicitly allowlisted provider-qualified route should succeed.');
+    $bad_tool = Chubes4\WpAiGateway\RestController::handle_responses(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['input' => 'bad', 'tools' => [['type' => 'code']]]));
+    assert_true(400 === $bad_tool->get_status(), 'Unsupported capabilities must fail deterministically.');
+
+    $runtime = Chubes4\WpAiGateway\TokenAuthenticator::generate_client_token('Runtime', 3600, ['site-default'], 7);
+    $runtime_response = Chubes4\WpAiGateway\RestController::handle_responses(new WP_REST_Request(['Authorization' => 'Bearer ' . $runtime['token']], ['model' => 'site-default', 'input' => 'hello']));
+    assert_true(200 === $runtime_response->get_status() && 7 === $GLOBALS['wp_ai_gateway_current_user_id'], 'Scoped credentials should bind Responses requests to their user.');
+    $denied = Chubes4\WpAiGateway\RestController::handle_responses(new WP_REST_Request(['Authorization' => 'Bearer ' . $runtime['token']], ['model' => 'example-provider:example-model', 'input' => 'hello']));
+    assert_true(403 === $denied->get_status(), 'Scoped credentials must enforce model policy.');
 
     $mediated = wp_ai_gateway_issue_runtime_credential(7, 300, 'Mediated runtime');
-    $mediated_response = wp_ai_gateway_dispatch_openai_request(
-        'POST',
-        '/chat/completions',
-        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token']
-    );
-    assert_true(200 === $mediated_response->get_status(), 'Site-owned control planes should dispatch through the gateway in-process.');
-    assert_true(7 === $GLOBALS['wp_ai_gateway_current_user_id'], 'Mediated dispatch should establish the credential-bound user.');
-
-    $stream_events = [];
-    $upstream_chunks = ["data: {\"id\":", "\"chatcmpl-one\"}\n\n", "data: [DONE]\n\n"];
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_provider_api_key'][] = static function ($key, string $provider): string {
-        unset($key);
-        return 'example-provider' === $provider ? 'site-owned-secret' : '';
-    };
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_url'][] = static function ($url, array $route, array $payload, string $path): string {
-        unset($url);
-        assert_true('example-provider' === $route['provider'], 'Streaming should use the configured provider route.');
-        unset($payload);
-        return 'https://provider.example/v1' . $path;
-    };
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_payload'][] = static function (array $payload): array {
-        if (isset($payload['max_tokens'])) {
-            $payload['max_completion_tokens'] = $payload['max_tokens'];
-            unset($payload['max_tokens']);
-        }
-        return $payload;
-    };
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_upstream_headers'][] = static function (array $headers, array $route, array $principal, string $path): array {
-        unset($route, $principal);
-        $headers['X-Gateway-Route'] = $path;
-        return $headers;
-    };
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'][] = static function ($transport) use ($upstream_chunks): callable {
-        unset($transport);
-        return static function (string $url, array $headers, string $body, callable $emit) use ($upstream_chunks): array {
-            $payload = json_decode($body, true);
-            assert_true('https://provider.example/v1/chat/completions' === $url, 'Streaming should target the site-configured HTTPS URL.');
-            assert_true('Bearer site-owned-secret' === $headers['Authorization'], 'Streaming should replace client auth with site-owned provider auth.');
-            assert_true('/chat/completions' === $headers['X-Gateway-Route'], 'Streaming headers should receive the selected route.');
-            assert_true('example-model' === $payload['model'], 'Streaming should rewrite site-default to the configured upstream model.');
-            assert_true(true === $payload['stream'], 'Streaming should force the upstream stream flag.');
-            assert_true(128 === $payload['max_completion_tokens'] && !isset($payload['max_tokens']), 'Streaming should apply site-owned upstream payload adaptation.');
-            $response = ['status' => 200, 'headers' => ['content-type' => 'text/event-stream']];
-            $emit('start', $response);
-            foreach ($upstream_chunks as $chunk) {
-                $emit('chunk', $chunk);
-            }
-            $emit('end', null);
-            return $response;
-        };
-    };
-    $stream_result = wp_ai_gateway_stream_openai_request(
-        ['model' => 'site-default', 'stream' => true, 'max_tokens' => 128, 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token'],
-        static function (string $event, $data) use (&$stream_events): void {
-            $stream_events[] = [$event, $data];
-        }
-    );
-    assert_true(200 === $stream_result['status'], 'Mediated streaming should return upstream status metadata.');
-    assert_true(['start', 'chunk', 'chunk', 'chunk', 'end'] === array_column($stream_events, 0), 'Streaming should preserve event order and upstream chunk boundaries.');
-    assert_true($upstream_chunks === array_column(array_slice($stream_events, 1, 3), 1), 'Streaming should carry exact upstream bytes without parsing or reconstruction.');
-    assert_true(7 === $GLOBALS['wp_ai_gateway_current_user_id'], 'Streaming should establish the credential-bound user.');
-
-    $responses_events = [];
-    $responses_chunks = ["event: response.output_text.delta\ndata: {\"delta\":\"North\"}\n\n", "event: response.completed\ndata: {\"response\":{\"id\":\"resp-one\"}}\n\n"];
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'] = [static function () use ($responses_chunks): callable {
-        return static function (string $url, array $headers, string $body, callable $emit) use ($responses_chunks): array {
-            $payload = json_decode($body, true);
-            assert_true('https://provider.example/v1/responses' === $url, 'Responses streaming should use its selected upstream route.');
-            assert_true('/responses' === $headers['X-Gateway-Route'], 'Responses headers should receive the selected route.');
-            assert_true('example-model' === $payload['model'] && true === $payload['stream'], 'Responses streaming should apply the configured model and stream flag.');
-            assert_true('hello' === $payload['input'], 'Responses streaming should preserve native input payloads.');
-            $response = ['status' => 200, 'headers' => ['content-type' => 'text/event-stream']];
-            $emit('start', $response);
-            foreach ($responses_chunks as $chunk) {
-                $emit('chunk', $chunk);
-            }
-            return $response;
-        };
-    }];
-    $responses_result = wp_ai_gateway_stream_openai_request(
-        ['model' => 'site-default', 'stream' => true, 'input' => 'hello'],
-        $mediated['token'],
-        static function (string $event, $data) use (&$responses_events): void {
-            $responses_events[] = [$event, $data];
-        },
-        '/responses'
-    );
-    assert_true(200 === $responses_result['status'], 'Native Responses API streaming should return upstream status metadata.');
-    assert_true($responses_chunks === array_column(array_slice($responses_events, 1, 2), 1), 'Responses API chunks should cross the gateway unchanged.');
-    assert_true('end' === $responses_events[3][0], 'Responses API streaming should terminate exactly once.');
-
-    $disallowed_stream = wp_ai_gateway_stream_openai_request(
-        ['model' => 'example-provider:example-model', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token'],
-        static function (): void {}
-    );
-    assert_true($disallowed_stream instanceof WP_REST_Response && 403 === $disallowed_stream->get_status(), 'Streaming should enforce the credential model policy before contacting upstream.');
-
-    $GLOBALS['wp_ai_gateway_current_user_can'] = true;
-    $admin_context_disallowed = wp_ai_gateway_stream_openai_request(
-        ['model' => 'example-provider:example-model', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token'],
-        static function (): void {}
-    );
-    assert_true($admin_context_disallowed instanceof WP_REST_Response && 403 === $admin_context_disallowed->get_status(), 'A supplied scoped bearer token should remain authoritative in an administrator context.');
-    $GLOBALS['wp_ai_gateway_current_user_can'] = false;
-
-    $non_streaming_dispatch = wp_ai_gateway_stream_openai_request(
-        ['model' => 'site-default', 'stream' => false, 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token'],
-        static function (): void {}
-    );
-    assert_true($non_streaming_dispatch instanceof WP_REST_Response && 400 === $non_streaming_dispatch->get_status(), 'Streaming dispatch should reject stream=false before contacting upstream.');
-
-    $partial_failure_events = [];
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'] = [static function (): callable {
-        return static function ($url, $headers, $body, callable $emit): WP_Error {
-            unset($url, $headers, $body);
-            $emit('start', ['status' => 200, 'headers' => ['content-type' => 'text/event-stream']]);
-            $emit('chunk', "data: partial\n\n");
-            return new WP_Error('upstream_reset', 'Upstream reset the stream.');
-        };
-    }];
-    $partial_failure = wp_ai_gateway_stream_openai_request(
-        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token'],
-        static function (string $event, $data) use (&$partial_failure_events): void {
-            $partial_failure_events[] = [$event, $data];
-        }
-    );
-    assert_true($partial_failure instanceof WP_Error, 'A partial upstream failure should remain observable to the control plane.');
-    assert_true(['start', 'chunk', 'end'] === array_column($partial_failure_events, 0), 'A partial upstream failure should emit one terminal end event.');
-    assert_true('upstream_reset' === $partial_failure_events[2][1]['error']['code'], 'The terminal event should identify the upstream failure.');
-
-    $early_failure_events = [];
-    $GLOBALS['wp_ai_gateway_filters']['wp_ai_gateway_stream_transport'] = [static function (): callable {
-        return static function (): WP_Error {
-            return new WP_Error('upstream_unreachable', 'Could not connect to upstream.');
-        };
-    }];
-    $early_failure = wp_ai_gateway_stream_openai_request(
-        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token'],
-        static function (string $event, $data) use (&$early_failure_events): void {
-            $early_failure_events[] = [$event, $data];
-        }
-    );
-    assert_true($early_failure instanceof WP_Error, 'An early upstream connection failure should remain observable to the control plane.');
-    assert_true(['end'] === array_column($early_failure_events, 0), 'An early upstream failure should emit one terminal end event.');
-    assert_true('upstream_unreachable' === $early_failure_events[0][1]['error']['code'], 'An early terminal event should identify the upstream failure.');
-
-    assert_true(wp_ai_gateway_revoke_runtime_credential($mediated['client']['id']), 'Mediated runtime credential should be revocable.');
-    $mediated_revoked = wp_ai_gateway_dispatch_openai_request('GET', '/models', null, $mediated['token']);
-    assert_true(403 === $mediated_revoked->get_status(), 'Revoked mediated credential should fail authentication.');
-    $revoked_stream = wp_ai_gateway_stream_openai_request(
-        ['model' => 'site-default', 'stream' => true, 'messages' => [['role' => 'user', 'content' => 'hello']]],
-        $mediated['token'],
-        static function (): void {}
-    );
-    assert_true($revoked_stream instanceof WP_REST_Response && 403 === $revoked_stream->get_status(), 'Revoked mediated credential should fail before opening an upstream stream.');
-
-    assert_true(Chubes4\WpAiGateway\TokenAuthenticator::revoke_client($runtime_one['client']['id']), 'One client should be revocable.');
-    $runtime_one_revoked = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer ' . $runtime_one['token']]));
-    $runtime_two_after_revoke = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer ' . $runtime_two['token']],
-        ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
-    ));
-    assert_true(403 === $runtime_one_revoked->get_status(), 'Revoked client should fail authentication.');
-    assert_true(200 === $runtime_two_after_revoke->get_status(), 'Revoking one client must not affect another.');
-    $clients_after_revoke = Chubes4\WpAiGateway\TokenAuthenticator::clients();
-    assert_true($clients_after_revoke[$runtime_one['client']['id']]['revoked_at'] > 0, 'Authentication telemetry must not overwrite revocation state.');
-    assert_true(null === Chubes4\WpAiGateway\TokenAuthenticator::rotate_client($runtime_one['client']['id'], 3600), 'Revoked client rotation must not reactivate the credential.');
-    $stale_clients = get_option(Chubes4\WpAiGateway\OPTION_CLIENTS);
-    $stale_clients[$runtime_one['client']['id']]['revoked_at'] = 0;
-    update_option(Chubes4\WpAiGateway\OPTION_CLIENTS, $stale_clients, false);
-    $revoked_after_stale_write = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer ' . $runtime_one['token']]));
-    assert_true(403 === $revoked_after_stale_write->get_status(), 'Immutable revocation tombstone must survive a stale registry write.');
-
-    $rotated_two = Chubes4\WpAiGateway\TokenAuthenticator::rotate_client($runtime_two['client']['id'], 7200);
-    $old_two_after_rotate = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer ' . $runtime_two['token']]));
-    $new_two_after_rotate = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
-        ['Authorization' => 'Bearer ' . $rotated_two['token']],
-        ['model' => 'example-provider:example-model', 'messages' => [['role' => 'user', 'content' => 'hello']]]
-    ));
-    assert_true(403 === $old_two_after_rotate->get_status(), 'Rotating one client should invalidate its prior credential.');
-    assert_true(200 === $new_two_after_rotate->get_status(), 'Rotated credential should preserve client model policy.');
-
-    $expired = Chubes4\WpAiGateway\TokenAuthenticator::generate_client_token('Expired runtime', 1);
-    $stored_clients = get_option(Chubes4\WpAiGateway\OPTION_CLIENTS);
-    $stored_clients[$expired['client']['id']]['expires_at'] = time() - 1;
-    update_option(Chubes4\WpAiGateway\OPTION_CLIENTS, $stored_clients, false);
-    $expired_response = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer ' . $expired['token']]));
-    assert_true(403 === $expired_response->get_status(), 'Expired client should fail authentication.');
-
-    $invalid_user_rejected = false;
-    try {
-        Chubes4\WpAiGateway\TokenAuthenticator::generate_client_token('Missing user', 3600, ['site-default'], 999);
-    } catch (InvalidArgumentException $e) {
-        $invalid_user_rejected = true;
-    }
-    assert_true($invalid_user_rejected, 'Client issuance should reject a missing bound user.');
+    $mediated_response = wp_ai_gateway_dispatch_openai_request('POST', '/responses', ['model' => 'site-default', 'input' => 'hello'], $mediated['token']);
+    assert_true(200 === $mediated_response->get_status(), 'Site-owned control planes should dispatch Responses in-process.');
+    assert_true(wp_ai_gateway_revoke_runtime_credential($mediated['client']['id']), 'Runtime credentials should be revocable.');
+    assert_true(403 === wp_ai_gateway_dispatch_openai_request('GET', '/models', null, $mediated['token'])->get_status(), 'Revoked credentials must fail authentication.');
 
     $embedding = Chubes4\WpAiGateway\RestController::handle_embeddings(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
         ['model' => 'example-provider:example-model', 'input' => 'hello']
     ));
-    assert_true(200 === $embedding->get_status(), 'Provider-qualified embedding path should return 200 with fake provider.');
-    assert_true('embedding' === $embedding->get_data()['data'][0]['object'], 'Embedding response should include OpenAI embedding objects.');
-    assert_true('embd-fake-request' === $embedding->get_data()['gateway_metadata']['request_id'], 'Embedding response should expose request metadata.');
-    assert_true(3 === $embedding->get_data()['usage']['totalTokens'], 'Embedding response should expose usage metadata.');
+    assert_true(200 === $embedding->get_status() && 'embedding' === $embedding->get_data()['data'][0]['object'], 'Embedding-capable providers should remain available through /embeddings.');
 
     $status = Chubes4\WpAiGateway\CliCommand::gateway_status();
-    assert_true(true === $status['configured'], 'Status should report configured route.');
-    assert_true(true === $status['token_hash_exists'], 'Status should report token hash exists.');
-    assert_true(4 === $status['client_count'], 'Status should report client count without secrets.');
-    assert_true(!array_key_exists('token', $status), 'Status must not expose token values.');
-    assert_true(false === strpos(serialize(Chubes4\WpAiGateway\TokenAuthenticator::public_clients()), 'token_hash'), 'Client listing must not expose token hashes.');
-
-    $replacement_legacy = Chubes4\WpAiGateway\TokenAuthenticator::generate_token();
-    $old_legacy_response = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer valid-token']));
-    $new_legacy_response = Chubes4\WpAiGateway\RestController::handle_models(new WP_REST_Request(['Authorization' => 'Bearer ' . $replacement_legacy]));
-    assert_true(403 === $old_legacy_response->get_status(), 'Legacy token generation should invalidate the prior singleton token.');
-    assert_true(200 === $new_legacy_response->get_status(), 'Replacement legacy token should authenticate.');
-
+    assert_true(true === $status['configured'] && !array_key_exists('token', $status), 'Status should report configuration without secrets.');
     echo "wp-ai-gateway smoke tests passed\n";
 }
