@@ -249,7 +249,7 @@ namespace WordPress\AiClient\Messages\Enums {
 namespace WordPress\AiClient\Providers\Models\DTO {
     class ModelConfig
     {
-        public static function fromArray(array $config): self { unset($config); return new self(); }
+        public static function fromArray(array $config): self { $GLOBALS['wp_ai_gateway_model_config'] = $config; return new self(); }
     }
 }
 
@@ -314,7 +314,7 @@ namespace WpAiGatewaySmoke {
     class FakeResult
     {
         private array $candidates;
-        public function __construct(FakeCandidate $candidate) { $this->candidates = [$candidate]; }
+        public function __construct(FakeCandidate ...$candidates) { $this->candidates = $candidates; }
         public function getCandidates(): array { return $this->candidates; }
     }
     class FakeModel {}
@@ -408,6 +408,18 @@ namespace {
     assert_true('call_weather' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function call IDs must be preserved.');
     assert_true('{"city":"Paris"}' === $tool_chat->get_data()['choices'][0]['message']['tool_calls'][0]['function']['arguments'], 'Function arguments must be JSON encoded.');
 
+    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(
+        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('I am checking now.')]),
+        new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart(null, new WordPress\AiClient\Tools\DTO\FunctionCall('call_bash', 'bash', ['command' => 'wp option update blogname "North Star"']))], 'tool_calls')
+    );
+    $text_then_tool = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
+        ['Authorization' => 'Bearer valid-token'],
+        ['model' => 'site-default', 'messages' => [['role' => 'user', 'content' => 'Change the site title.']], 'tools' => [['type' => 'function', 'function' => ['name' => 'bash', 'parameters' => ['type' => 'object']]]]]
+    ));
+    assert_true('I am checking now.' === $text_then_tool->get_data()['choices'][0]['message']['content'], 'Text before a function call must be preserved.');
+    assert_true('call_bash' === $text_then_tool->get_data()['choices'][0]['message']['tool_calls'][0]['id'], 'Function calls after text candidates must be preserved.');
+    assert_true('tool_calls' === $text_then_tool->get_data()['choices'][0]['finish_reason'], 'Any function-call candidate must finish with tool_calls.');
+
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('No arguments needed.')]));
     Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(
         ['Authorization' => 'Bearer valid-token'],
@@ -440,11 +452,22 @@ namespace {
 
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('It is sunny.')]));
     $followup = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [
-        ['role' => 'assistant', 'content' => null, 'tool_calls' => [['id' => 'call_weather', 'type' => 'function', 'function' => ['name' => 'weather', 'arguments' => '{"city":"Paris"}']]]],
+        ['role' => 'system', 'content' => 'Operate the site with tools.'],
+        ['role' => 'system', 'content' => [['type' => 'text', 'text' => 'Verify every change.']]],
+        ['role' => 'user', 'content' => 'Weather?'],
+        ['role' => 'assistant', 'content' => 'Checking the weather.', 'tool_calls' => [['id' => 'call_weather', 'type' => 'function', 'function' => ['name' => 'weather', 'arguments' => '{"city":"Paris"}']]]],
         ['role' => 'tool', 'tool_call_id' => 'call_weather', 'content' => '{"temperature":20}'],
+        ['role' => 'assistant', 'content' => 'It is sunny.'],
+        ['role' => 'user', 'content' => 'Change the site title.'],
     ]]));
-    $function_response = $GLOBALS['wp_ai_gateway_messages'][1]->parts[0]->content;
+    assert_true("Operate the site with tools.\n\nVerify every change." === $GLOBALS['wp_ai_gateway_model_config']['systemInstruction'], 'System messages must become the provider system instruction in order.');
+    assert_true(6 === count($GLOBALS['wp_ai_gateway_messages']), 'System messages must be excluded while assistant text and function calls become standalone history items.');
+    assert_true('Weather?' === $GLOBALS['wp_ai_gateway_messages'][0]->parts[0]->content, 'User history must remain first after system extraction.');
+    assert_true('Checking the weather.' === $GLOBALS['wp_ai_gateway_messages'][1]->parts[0]->content, 'Assistant text before a function call must remain standalone.');
+    assert_true('weather' === $GLOBALS['wp_ai_gateway_messages'][2]->parts[0]->content->getName(), 'Assistant function calls must remain standalone.');
+    $function_response = $GLOBALS['wp_ai_gateway_messages'][3]->parts[0]->content;
     assert_true('weather' === $function_response->name && 20 === $function_response->response['temperature'], 'Tool result history must become decoded FunctionResponse parts.');
+    assert_true('Change the site title.' === $GLOBALS['wp_ai_gateway_messages'][5]->parts[0]->content, 'Follow-up user messages must remain after tool history.');
     assert_true('It is sunny.' === $followup->get_data()['choices'][0]['message']['content'], 'Tool-result follow-up must preserve final text.');
 
     $text_stream = Chubes4\WpAiGateway\RestController::handle_chat_completions(new WP_REST_Request(['Authorization' => 'Bearer valid-token'], ['messages' => [['role' => 'user', 'content' => 'stream']], 'stream' => true]));

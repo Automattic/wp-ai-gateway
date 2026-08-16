@@ -238,6 +238,10 @@ final class AiClientBridge
         }
 
         $config = [];
+        $system_instruction = self::system_instruction_from_messages($payload['messages'] ?? []);
+        if ('' !== $system_instruction) {
+            $config['systemInstruction'] = $system_instruction;
+        }
         foreach (['max_tokens', 'temperature', 'top_p', 'stop', 'presence_penalty', 'frequency_penalty'] as $key) {
             if (array_key_exists($key, $payload)) {
                 $config[$key] = $payload[$key];
@@ -245,6 +249,31 @@ final class AiClientBridge
         }
 
         return $class::fromArray($config);
+    }
+
+    /**
+     * Collects OpenAI system messages for the AI Client model instruction.
+     *
+     * @param mixed $messages OpenAI messages payload.
+     * @return string
+     */
+    private static function system_instruction_from_messages($messages): string
+    {
+        if (!is_array($messages)) {
+            return '';
+        }
+
+        $instructions = [];
+        foreach ($messages as $message) {
+            if (!is_array($message) || 'system' !== ($message['role'] ?? null)) {
+                continue;
+            }
+            $content = self::message_content_to_text($message['content'] ?? '');
+            if ('' !== $content) {
+                $instructions[] = $content;
+            }
+        }
+        return implode("\n\n", $instructions);
     }
 
     /**
@@ -342,6 +371,12 @@ final class AiClientBridge
             if (!is_string($role) || !in_array($role, ['system', 'user', 'assistant', 'model', 'tool'], true)) {
                 throw new \InvalidArgumentException('Each message requires a supported role.');
             }
+            if ('system' === $role) {
+                if (isset($message['tool_calls'])) {
+                    throw new \InvalidArgumentException('Only assistant messages may contain tool_calls.');
+                }
+                continue;
+            }
             if ('tool' === $role) {
                 $id = $message['tool_call_id'] ?? null;
                 if (!is_string($id) || '' === $id) {
@@ -360,28 +395,33 @@ final class AiClientBridge
                 continue;
             }
 
-            $parts = [];
             $content = self::message_content_to_text($message['content'] ?? '');
-            if ('' !== $content) {
-                $parts[] = new \WordPress\AiClient\Messages\DTO\MessagePart($content);
-            }
             if ('assistant' === $role || 'model' === $role) {
+                if ('' !== $content) {
+                    $normalized[] = new \WordPress\AiClient\Messages\DTO\Message(
+                        \WordPress\AiClient\Messages\Enums\MessageRoleEnum::model(),
+                        [new \WordPress\AiClient\Messages\DTO\MessagePart($content)]
+                    );
+                }
                 foreach (self::normalize_tool_calls($message['tool_calls'] ?? []) as $call) {
                     $call_names[$call->getId()] = $call->getName();
-                    $parts[] = new \WordPress\AiClient\Messages\DTO\MessagePart($call);
+                    $normalized[] = new \WordPress\AiClient\Messages\DTO\Message(
+                        \WordPress\AiClient\Messages\Enums\MessageRoleEnum::model(),
+                        [new \WordPress\AiClient\Messages\DTO\MessagePart($call)]
+                    );
                 }
-            } elseif (isset($message['tool_calls'])) {
+                continue;
+            }
+            if (isset($message['tool_calls'])) {
                 throw new \InvalidArgumentException('Only assistant messages may contain tool_calls.');
             }
-            if ([] === $parts) {
+            if ('' === $content) {
                 continue;
             }
 
             $normalized[] = new \WordPress\AiClient\Messages\DTO\Message(
-                'assistant' === $role || 'model' === $role
-                    ? \WordPress\AiClient\Messages\Enums\MessageRoleEnum::model()
-                    : \WordPress\AiClient\Messages\Enums\MessageRoleEnum::user(),
-                $parts
+                \WordPress\AiClient\Messages\Enums\MessageRoleEnum::user(),
+                [new \WordPress\AiClient\Messages\DTO\MessagePart($content)]
             );
         }
 
@@ -444,38 +484,47 @@ final class AiClientBridge
             throw new \InvalidArgumentException('Text generation did not return a structured result.');
         }
         $candidates = $result->getCandidates();
-        if (!is_array($candidates) || !isset($candidates[0]) || !method_exists($candidates[0], 'getMessage')) {
+        if (!is_array($candidates) || [] === $candidates) {
             throw new \InvalidArgumentException('Text generation result did not include a candidate.');
         }
-        $candidate = $candidates[0];
-        $message = $candidate->getMessage();
         $content = [];
         $tool_calls = [];
-        foreach ($message->getParts() as $part) {
-            if (method_exists($part, 'getText') && null !== $part->getText()) {
-                $content[] = $part->getText();
+        $finish_reason = 'stop';
+        foreach ($candidates as $candidate) {
+            if (!is_object($candidate) || !method_exists($candidate, 'getMessage')) {
+                throw new \InvalidArgumentException('Text generation result included an invalid candidate.');
             }
-            if (method_exists($part, 'getFunctionCall') && null !== $part->getFunctionCall()) {
-                $call = $part->getFunctionCall();
-                if (!is_string($call->getName()) || '' === $call->getName()) {
-                    throw new \InvalidArgumentException('Provider function calls require a non-empty name.');
-                }
-                $args = $call->getArgs();
-                if (null === $args || (is_array($args) && [] === $args)) {
-                    $args = new \stdClass();
-                }
-                $arguments = wp_json_encode($args);
-                if (!is_string($arguments)) {
-                    throw new \InvalidArgumentException('Function call arguments could not be JSON encoded.');
-                }
-                $tool_calls[] = [
-                    'id' => $call->getId() ?: 'call_' . wp_generate_uuid4(),
-                    'type' => 'function',
-                    'function' => ['name' => $call->getName(), 'arguments' => $arguments],
-                ];
+            $message = $candidate->getMessage();
+            if (!is_object($message) || !method_exists($message, 'getParts')) {
+                throw new \InvalidArgumentException('Text generation candidate did not include a message.');
             }
+            foreach ($message->getParts() as $part) {
+                if (method_exists($part, 'getText') && null !== $part->getText()) {
+                    $content[] = $part->getText();
+                }
+                if (method_exists($part, 'getFunctionCall') && null !== $part->getFunctionCall()) {
+                    $call = $part->getFunctionCall();
+                    if (!is_string($call->getName()) || '' === $call->getName()) {
+                        throw new \InvalidArgumentException('Provider function calls require a non-empty name.');
+                    }
+                    $args = $call->getArgs();
+                    if (null === $args || (is_array($args) && [] === $args)) {
+                        $args = new \stdClass();
+                    }
+                    $arguments = wp_json_encode($args);
+                    if (!is_string($arguments)) {
+                        throw new \InvalidArgumentException('Function call arguments could not be JSON encoded.');
+                    }
+                    $tool_calls[] = [
+                        'id' => $call->getId() ?: 'call_' . wp_generate_uuid4(),
+                        'type' => 'function',
+                        'function' => ['name' => $call->getName(), 'arguments' => $arguments],
+                    ];
+                }
+            }
+            $finish_reason = self::finish_reason($candidate);
         }
-        $finish_reason = [] !== $tool_calls ? 'tool_calls' : self::finish_reason($candidate);
+        $finish_reason = [] !== $tool_calls ? 'tool_calls' : $finish_reason;
         $openai_message = ['role' => 'assistant', 'content' => [] === $content ? null : implode('', $content)];
         if ([] !== $tool_calls) {
             $openai_message['tool_calls'] = $tool_calls;
