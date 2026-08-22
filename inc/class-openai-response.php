@@ -95,7 +95,7 @@ final class OpenAiResponse
         foreach ($generation['tool_calls'] ?? [] as $tool_call) {
             $output[] = ['id' => 'fc_' . wp_generate_uuid4(), 'type' => 'function_call', 'call_id' => $tool_call['id'], 'name' => $tool_call['function']['name'], 'arguments' => $tool_call['function']['arguments'], 'status' => 'completed'];
         }
-        return ['id' => $id, 'object' => 'response', 'created_at' => time(), 'status' => 'completed', 'model' => $model, 'output' => $output, 'usage' => null, 'error' => null, 'incomplete_details' => null];
+        return ['id' => $id, 'object' => 'response', 'created_at' => time(), 'status' => 'completed', 'model' => $model, 'output' => $output, 'usage' => is_array($generation['usage'] ?? null) ? $generation['usage'] : null, 'error' => null, 'incomplete_details' => null];
     }
 
     private static function event(string $name, array $data): array

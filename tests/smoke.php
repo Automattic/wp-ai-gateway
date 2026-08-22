@@ -314,8 +314,18 @@ namespace WpAiGatewaySmoke {
     class FakeResult
     {
         private array $candidates;
+        private $tokenUsage = null;
         public function __construct(FakeCandidate ...$candidates) { $this->candidates = $candidates; }
         public function getCandidates(): array { return $this->candidates; }
+        public function withTokenUsage($usage): self { $this->tokenUsage = $usage; return $this; }
+        public function getTokenUsage() { return $this->tokenUsage; }
+    }
+    class FakeTokenUsage
+    {
+        public function __construct(private int $prompt, private int $completion, private int $total) {}
+        public function getPromptTokens(): int { return $this->prompt; }
+        public function getCompletionTokens(): int { return $this->completion; }
+        public function getTotalTokens(): int { return $this->total; }
     }
     class FakeModel {}
 
@@ -354,7 +364,7 @@ namespace {
 
     $registry = new WpAiGatewaySmoke\FakeRegistry();
     WordPress\AiClient\AiClient::$registry = $registry;
-    $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('ok from fake provider')]));
+    $GLOBALS['wp_ai_gateway_fake_result'] = (new WpAiGatewaySmoke\FakeResult(new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('ok from fake provider')])))->withTokenUsage(new WpAiGatewaySmoke\FakeTokenUsage(11, 7, 18));
 
     Chubes4\WpAiGateway\RestController::register_routes();
     assert_true(isset($GLOBALS['wp_ai_gateway_routes']['wp-ai-gateway/v1/responses']), 'Responses route must be registered.');
@@ -377,6 +387,7 @@ namespace {
     ));
     assert_true(200 === $text->get_status(), 'Text-only Responses request should succeed.');
     assert_true('ok from fake provider' === $text->get_data()['output'][0]['content'][0]['text'], 'Responses output should preserve provider text.');
+    assert_true(['input_tokens' => 11, 'output_tokens' => 7, 'total_tokens' => 18] === $text->get_data()['usage'], 'Responses output should preserve provider token usage.');
 
     $GLOBALS['wp_ai_gateway_fake_result'] = new WpAiGatewaySmoke\FakeResult(
         new WpAiGatewaySmoke\FakeCandidate([new WpAiGatewaySmoke\FakePart('Checking now.')]),
@@ -391,6 +402,8 @@ namespace {
             'stream' => true,
         ]
     ));
+    $tool_events = $tool->get_data()['events'];
+    assert_true(null === $tool_events[count($tool_events) - 1]['data']['response']['usage'], 'Responses output should keep usage null when the provider omits it.');
     assert_true('bash' === $GLOBALS['wp_ai_gateway_declarations'][0]->name, 'Responses tools must become AI Client declarations.');
     ob_start();
     $served = Chubes4\WpAiGateway\RestController::serve_stream(false, $tool, new WP_REST_Request(), new class { public function send_header(string $name, string $value): void {} });

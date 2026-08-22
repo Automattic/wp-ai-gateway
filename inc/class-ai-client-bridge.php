@@ -646,6 +646,30 @@ final class AiClientBridge
             'content' => [] === $content ? null : implode('', $content),
             'tool_calls' => $tool_calls,
             'finish_reason' => $finish_reason,
+            'usage' => self::token_usage_from_result($result),
+        ];
+    }
+
+    /** Maps authoritative AI Client token usage to the Responses schema. */
+    private static function token_usage_from_result($result): ?array
+    {
+        if (!is_object($result) || !method_exists($result, 'getTokenUsage')) {
+            return null;
+        }
+
+        try {
+            $usage = $result->getTokenUsage();
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_object($usage) || !method_exists($usage, 'getPromptTokens') || !method_exists($usage, 'getCompletionTokens') || !method_exists($usage, 'getTotalTokens')) {
+            return null;
+        }
+
+        return [
+            'input_tokens' => (int) $usage->getPromptTokens(),
+            'output_tokens' => (int) $usage->getCompletionTokens(),
+            'total_tokens' => (int) $usage->getTotalTokens(),
         ];
     }
 
